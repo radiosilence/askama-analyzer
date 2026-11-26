@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 ### Fixed
 
 - **askama's vendored test suite is complete again.** Three of its `.gitignore` files were left out when the server moved from zed-askama, which failed the suite's check.
+- **Hover, definition and rename work on every segment of a path.** On `Button` or `primary` in `kit::Button::primary(…)` they found nothing, because rust-analyzer was asked about the `::` before the segment rather than the segment itself.
 
 ## 0.2.0
 
