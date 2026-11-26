@@ -103,6 +103,55 @@ async fn hover_on_a_field_shows_its_documentation() {
     );
 }
 
+/// The hover text at the position just after `needle` in shop.html, plus `into` bytes.
+async fn hover_at(workspaces: &mut [Workspace], needle: &str, into: usize) -> Option<String> {
+    let (uri, position) = after(&fixture().join("templates/shop.html"), needle, into);
+    let (reply, answer) = oneshot::channel();
+    features::answer(
+        workspaces,
+        Query::Hover(
+            HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+            reply,
+        ),
+    )
+    .await;
+    answer
+        .await
+        .expect("the lane answers")
+        .map(|hover| match hover.contents {
+            HoverContents::Markup(markup) => markup.value,
+            other => format!("{other:?}"),
+        })
+}
+
+#[tokio::test]
+async fn hover_on_each_segment_of_a_called_path_shows_that_item() {
+    let Some(rust_analyzer) = rust_analyzer() else {
+        return;
+    };
+    let mut workspaces = vec![shop(rust_analyzer).await];
+    let button = hover_at(&mut workspaces, "kit::", 1).await;
+    assert!(
+        button
+            .as_deref()
+            .is_some_and(|shown| shown.contains("A button in the shop's style")),
+        "hover on `Button` does not show the struct: {button:?}"
+    );
+    let primary = hover_at(&mut workspaces, "Button::", 1).await;
+    assert!(
+        primary
+            .as_deref()
+            .is_some_and(|shown| shown.contains("The main call to action")),
+        "hover on `primary` does not show the function: {primary:?}"
+    );
+}
+
 #[tokio::test]
 async fn going_to_a_fields_definition_lands_on_the_field_in_rust() {
     let Some(rust_analyzer) = rust_analyzer() else {

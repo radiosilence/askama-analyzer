@@ -442,7 +442,15 @@ pub fn generated_offset(generated: &Generated, template: &Path, offset: usize) -
             }
             _ => None,
         })
-        .min_by_key(|(mapping, range)| (range.len(), mapping.generated.start))
+        // The narrowest range, then the token that is that range's own text: askama gives
+        // punctuation it writes beside a name (the `::` before a path segment) the name's span.
+        .min_by_key(|(mapping, range)| {
+            (
+                range.len(),
+                mapping.generated.len() != range.len(),
+                mapping.generated.start,
+            )
+        })
         .map(|(mapping, range)| {
             let inside = if mapping.generated.len() == range.len() {
                 offset - range.start

@@ -3,6 +3,18 @@
 
 use askama::Template;
 
+pub mod kit {
+    /// A button in the shop's style.
+    pub struct Button;
+
+    impl Button {
+        /// The main call to action.
+        pub fn primary(label: &str) -> String {
+            format!("<button>{label}</button>")
+        }
+    }
+}
+
 pub struct Product {
     /// What the product is called.
     pub name: String,
