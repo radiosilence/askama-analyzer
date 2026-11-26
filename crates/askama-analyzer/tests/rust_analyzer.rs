@@ -104,7 +104,7 @@ async fn hover_on_a_field_shows_its_documentation() {
 }
 
 /// The hover text at the position just after `needle` in shop.html, plus `into` bytes.
-async fn hover_at(workspaces: &mut Vec<Workspace>, needle: &str, into: usize) -> Option<String> {
+async fn hover_at(workspaces: &mut [Workspace], needle: &str, into: usize) -> Option<String> {
     let (uri, position) = after(&fixture().join("templates/shop.html"), needle, into);
     let (reply, answer) = oneshot::channel();
     features::answer(
