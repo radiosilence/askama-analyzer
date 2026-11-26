@@ -13,6 +13,10 @@ updates:
       # parser. A new askama release is taken by re-vendoring
       # (`just vendor-askama`), which moves both together.
       - dependency-name: askama_parser
+      # async-lsp's types are lsp-types 0.95's (0.2.4 depends on it), and the
+      # server passes them straight through, so lsp-types moves when async-lsp
+      # does. A bump on its own builds two incompatible copies of every type.
+      - dependency-name: lsp-types
 
   # Every action here is SHA-pinned, which is correct and also means they never
   # update themselves.
