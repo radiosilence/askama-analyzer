@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Completion offers loop variables, tags, filters and template paths, and go to definition follows includes, macros and blocks.** Completion of a bare name offered only the template struct's fields; it now offers the loop variables and `let` bindings in scope too, tag keywords with the closing tag of the innermost open block first, askama's built-in filters after a pipe, and template files inside `extends`, `include` and `import`. Go to definition takes a path to its file, a `call` to its macro and an overriding block to the parent's. Zed shows rust-analyzer loading as progress, and a Claude Code plugin gives Claude Code's LSP tool the same analysis.
+
+### Changed
+
+- **askama-analyzer is released from its own repository.** Releases, the Claude Code plugin and `cargo install --git` now come from radiosilence/askama-analyzer, so the server ships on its own schedule and any LSP client can use it; the tree-sitter grammar and the Zed extension stay in radiosilence/zed-askama.
+
 ## 0.1.0
 
 ### Added
