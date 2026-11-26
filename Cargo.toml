@@ -1,7 +1,6 @@
 [workspace]
 members = ["crates/*"]
-# Upstream code with our tooling patch, built as a dependency but not held to
-# this workspace's lints; scripts/vendor-askama.py owns its contents.
+# askama's test suite, read by the corpus tests; not a member.
 exclude = ["vendor"]
 resolver = "3"
 
@@ -14,11 +13,11 @@ publish = false
 
 [workspace.dependencies]
 askama-analyzer-codegen = { path = "crates/askama-analyzer-codegen" }
-# Exact pins: askama_derive requires this exact parser, and the vendored
-# generator is the release the analyser understands. scripts/vendor-askama.py
-# reads the version from here.
-askama_parser = { version = "=0.16.1", default-features = false, features = ["config"] }
-askama_derive = { path = "vendor/askama_derive", version = "=0.16.1", default-features = false, features = [
+# askama's generator with the `tooling` feature, from the `tooling` branch of
+# radiosilence/askama: askama's release (0.16.1) plus that one change. The
+# parser comes from the same commit, since askama_derive requires its own.
+askama_parser = { git = "https://github.com/radiosilence/askama", rev = "ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed", default-features = false, features = ["config"] }
+askama_derive = { git = "https://github.com/radiosilence/askama", rev = "ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed", default-features = false, features = [
     "alloc",
     "code-in-doc",
     "config",

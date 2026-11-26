@@ -2,7 +2,7 @@
 //! token back to the text it came from.
 //!
 //! The analyser asks rust-analyzer about the code `cargo build` compiles, so it runs askama's
-//! generator (vendored with a tooling patch; see ARCHITECTURE.md) instead of an imitation of
+//! generator (with its `tooling` feature; see ARCHITECTURE.md) instead of an imitation of
 //! it. The generator gives each token it emits the template range it came from; this crate
 //! prints the tokens as Rust and keeps those ranges as a [`Mapping`] per token.
 //!

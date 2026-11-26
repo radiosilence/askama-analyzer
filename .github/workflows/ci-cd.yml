@@ -56,7 +56,6 @@ jobs:
       actions: read
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
-      vendor: ${{ steps.filter.outputs.vendor }}
       changelog: ${{ steps.filter.outputs.changelog }}
       workflows: ${{ steps.filter.outputs.workflows }}
       deps: ${{ steps.filter.outputs.deps }}
@@ -88,7 +87,7 @@ jobs:
         # command rather than an answer, so every question is asked in a
         # condition.
         run: |
-          rust=true vendor=true changelog=true workflows=true deps=true release=false
+          rust=true changelog=true workflows=true deps=true release=false
           # The workspace version, which every other version file follows
           # (scripts/versions.py).
           version_of() { sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' | head -1; }
@@ -149,9 +148,6 @@ jobs:
             # vendored generator and askama's vendored test suite, which the
             # generator's tests read.
             touches '^crates/|^vendor/|^Cargo\.(toml|lock)$|^\.cargo/|^mise\.toml$|^\.github/' || rust=false
-            # The vendored generator must stay upstream's release plus our
-            # patch, and its version follows the parser pin in Cargo.toml.
-            touches '^vendor/|^scripts/vendor-askama\.py$|^Cargo\.toml$|^\.github/' || vendor=false
             touches '^\.github/(workflows|actions)/' || workflows=false
             # editors/claude-code and .claude-plugin are manifests with no
             # build; `versions`, which runs on every change, holds the plugin's
@@ -166,7 +162,6 @@ jobs:
           fi
           {
             echo "rust=$rust"
-            echo "vendor=$vendor"
             echo "changelog=$changelog"
             echo "workflows=$workflows"
             echo "deps=$deps"
@@ -197,8 +192,6 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Check formatting
-        # The workspace's own crates; `--all` would also format the vendored
-        # askama_derive, which must stay as upstream and its patch left it.
         run: cargo fmt -- --check
       - name: Clippy
         if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
@@ -206,6 +199,9 @@ jobs:
       - name: Run tests
         if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: cargo test --workspace --locked
+      - name: Vendored askama test suite is askama's
+        if: ${{ !cancelled() }}
+        run: python3 scripts/vendor-askama-testing.py --check
 
   # The server and the Claude Code plugin release at one version. Seconds, so
   # every run checks it.
@@ -216,21 +212,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 scripts/versions.py
-
-  # vendor/askama_derive must be askama_derive at the version Cargo.toml pins
-  # askama_parser to, with vendor/askama_derive-tooling.patch applied and
-  # nothing else: an edit made there by hand would be lost at the next
-  # re-vendoring, and a patch that stops applying to a new release must fail
-  # here rather than ship half applied.
-  vendor:
-    name: Vendored generator
-    runs-on: ubuntu-24.04
-    needs: changes
-    if: needs.changes.outputs.vendor == 'true'
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: python3 scripts/vendor-askama.py --check
 
   # CHANGELOG.md is generated from changelog.d/ (scripts/changelog.py). A pull
   # request adds fragments without regenerating it, so only its fragments and
@@ -414,7 +395,7 @@ jobs:
     name: Checks
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [changes, check, versions, vendor, changelog, actionlint, audit, make-room, build]
+    needs: [changes, check, versions, changelog, actionlint, audit, make-room, build]
     if: always()
     steps:
       - env:

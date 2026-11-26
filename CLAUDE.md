@@ -30,10 +30,9 @@ One workflow, `.github/workflows/ci-cd.yml`, ending in `Checks`, the only requir
 
 ## Invariants
 
-- **askama's code generation is never reimplemented.** The analyser runs askama's generator, vendored in `vendor/askama_derive`, so what rust-analyzer analyses is what `cargo build` compiles.
-- **`vendor/askama_derive` is upstream's release plus `vendor/askama_derive-tooling.patch`, and nothing else.** Edit the vendored files, then run `just vendor-askama --write-patch`; CI fails when `just vendor-askama --check` does. ARCHITECTURE.md lists what the patch changes and why.
-- **Formatting never touches `vendor/`.** `cargo fmt` (never `--all`, which also formats path dependencies) in the justfile, CI, lefthook and the agents' push guard. askama_derive ships its own `.rustfmt.toml`, and any reformatting there would show as drift from the patch.
-- **`askama_parser` is pinned exactly to the vendored generator's version.** A new askama release is taken by changing the pin and running `just vendor-askama`, which moves both.
+- **askama's code generation is never reimplemented.** The analyser runs askama's generator, from the `tooling` branch of [radiosilence/askama](https://github.com/radiosilence/askama/compare/v0.16.1...tooling), so what rust-analyzer analyses is what `cargo build` compiles.
+- **The fork's `tooling` branch is askama's release plus the `tooling` feature, and nothing else.** The change is one reviewable diff against the release tag; ARCHITECTURE.md lists what it does and why. A new askama release is merged into the branch, and `askama_derive` and `askama_parser` move here together to the new commit (`rev` in `Cargo.toml`).
+- **Formatting never touches `vendor/`.** `cargo fmt` (never `--all`) in the justfile, CI, lefthook and the agents' push guard; `vendor/askama-testing` is askama's code.
 - **Every thread that parses with proc-macro2 frees its source map afterwards** (`proc_macro2::extra::invalidate_current_thread_spans`), since `span-locations` keeps every parsed text for the life of the thread. `askama_analyzer_codegen::generate` does this itself.
 - **Every version file states one version.** The workspace `Cargo.toml` and `editors/claude-code/.claude-plugin/plugin.json` move together through `scripts/versions.py --set`; CI fails when they disagree.
 - **The release archive names are a contract with the editors that download them.** zed-askama's `server_asset` downloads `askama-analyzer-<target>.tar.gz` (or `.zip` on Windows) from this repository's latest release by name; the `build` job in `ci-cd.yml` must produce exactly those.
@@ -51,6 +50,4 @@ One workflow, `.github/workflows/ci-cd.yml`, ending in `Checks`, the only requir
 | `editors/claude-code/`, `.claude-plugin/marketplace.json` | The Claude Code plugin, which gives Claude Code's LSP tool `askama-analyzer`, and the marketplace that installs it from this repository |
 | `scripts/release.sh`, `scripts/versions.py`, `docs/releasing.md` | The release pull request, the one-version check, and how they fit |
 | `vendor/askama-testing`, `scripts/vendor-askama-testing.py` | askama's test suite and the script that vendors it |
-| `vendor/askama_derive`, `vendor/askama_derive-tooling.patch` | askama's generator with the tooling patch |
-| `scripts/vendor-askama.py` | Downloads, verifies and patches the vendored generator |
 | `ARCHITECTURE.md` | How the pieces fit and the rules they keep |

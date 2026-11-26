@@ -106,6 +106,7 @@ dependencies = [
 [[package]]
 name = "askama_derive"
 version = "0.16.1"
+source = "git+https://github.com/radiosilence/askama?rev=ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed#ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed"
 dependencies = [
  "askama_parser",
  "basic-toml",
@@ -123,8 +124,7 @@ dependencies = [
 [[package]]
 name = "askama_parser"
 version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c5ae75772275d268b03ab8bdccdd12117b6169ee23256942b34e46c9f476583"
+source = "git+https://github.com/radiosilence/askama?rev=ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed#ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed"
 dependencies = [
  "rustc-hash",
  "serde",
