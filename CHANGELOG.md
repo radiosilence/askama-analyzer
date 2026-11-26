@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **askama's vendored test suite is complete again.** Three of its `.gitignore` files were left out when the server moved from zed-askama, which failed the suite's check.
+
 ## 0.2.0
 
 ### Added
