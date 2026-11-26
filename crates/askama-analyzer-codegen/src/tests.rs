@@ -409,3 +409,36 @@ fn a_syntax_error_is_reported_where_the_parser_stopped_in_the_template() {
         error.message
     );
 }
+
+#[test]
+fn each_segment_of_a_called_path_maps_to_its_own_name() {
+    let template = r#"{{ kit::Button::primary("Save") }}"#;
+    let files = Memory::with(&[("templates/page.html", template)]);
+    let generated = run(
+        r#"#[derive(Template)] #[template(path = "page.html")] struct Page {}"#,
+        files,
+    );
+    assert!(
+        generated.errors.is_empty(),
+        "unexpected errors: {:?}",
+        generated.errors
+    );
+    let from_file: Vec<_> = generated
+        .map
+        .iter()
+        .filter_map(|mapping| {
+            template_range(&mapping.origin, "page.html")
+                .map(|range| (range, &generated.code[mapping.generated.clone()]))
+        })
+        .collect();
+    for segment in ["kit", "Button", "primary"] {
+        let at = template.find(segment).expect("fixture holds the segment");
+        assert!(
+            from_file
+                .iter()
+                .any(|(range, text)| *range == (at..at + segment.len()) && *text == segment),
+            "`{segment}` is not mapped to its own name at {at}: {from_file:?}\ncode:\n{}",
+            generated.code
+        );
+    }
+}
