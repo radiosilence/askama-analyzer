@@ -42,10 +42,10 @@ It needs `rust-analyzer`, from the client's initialization options or the `PATH`
 | `crates/askama-analyzer` | The language server, `check` and `fmt` |
 | `crates/askama-analyzer-codegen` | askama's generator run on one template item, with a map from every generated token to its template range |
 | `editors/claude-code` | The Claude Code plugin |
-| `vendor/askama_derive` | askama's generator with a small patch for long-running use, described in [ARCHITECTURE.md](ARCHITECTURE.md) |
+| [radiosilence/askama](https://github.com/radiosilence/askama/compare/v0.16.1...tooling) | askama with a small `tooling` feature for long-running use, described in [ARCHITECTURE.md](ARCHITECTURE.md), which the crates build from |
 | `vendor/askama-testing` | askama's own test suite at the pinned release, which the generator and the formatter are tested against |
 | `docs/releasing.md` | How a release goes and the secrets it needs |
 
 ## Licence
 
-MIT, in [LICENSE](LICENSE). `vendor/askama_derive` is askama's code under its own MIT or Apache-2.0 licence, kept beside it.
+MIT, in [LICENSE](LICENSE). `vendor/askama-testing` is askama's code under its own MIT or Apache-2.0 licence, kept beside it.
