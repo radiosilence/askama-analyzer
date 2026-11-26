@@ -1,0 +1,1 @@
+- **askama's vendored test suite is complete again.** Three of its `.gitignore` files were left out when the server moved from zed-askama, which failed the suite's check.
