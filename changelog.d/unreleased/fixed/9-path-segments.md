@@ -1,0 +1,1 @@
+- **Hover, definition and rename work on every segment of a path.** On `Button` or `primary` in `kit::Button::primary(…)` they found nothing, because rust-analyzer was asked about the `::` before the segment rather than the segment itself.
