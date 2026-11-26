@@ -10,6 +10,10 @@
 
 - **askama-analyzer is released from its own repository.** Releases, the Claude Code plugin and `cargo install --git` now come from radiosilence/askama-analyzer, so the server ships on its own schedule and any LSP client can use it; the tree-sitter grammar and the Zed extension stay in radiosilence/zed-askama.
 
+### Internal
+
+- **askama's generator is built from the radiosilence/askama fork.** The tooling change is one commit on askama's release tag instead of a vendored copy and a patch file, so it reads as an ordinary diff and a new askama release is a merge.
+
 ## 0.1.0
 
 ### Added
