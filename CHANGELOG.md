@@ -1,10 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 ### Added
 
 - **The formatter lays out long expressions and indents HTML.** Expressions inside tags are broken over lines as rustfmt breaks Rust, to `--max-width` or `format.maxWidth` (100); a line still too long breaks inside the tags that run past the width, and in HTML between a start tag's attributes; and HTML templates are re-indented by nesting depth, by the file's `.editorconfig`, unless `--no-indent-html` or `format.indentHtml: false` says not to. Only whitespace that HTML does not render changes, except in a macro or include another file renders inside `<pre>`.
+
+### Fixed
+
+- **Renames reach templates, and a rename that cannot work says why.** Renaming a field from a template now renames its uses in templates as well as in Rust, and a name rust-analyzer will not rename, such as one from a dependency, is refused with its reason instead of opening a rename that does nothing. Errors on a field now sit on its name rather than the whole access.
 
 ## 0.2.1
 
