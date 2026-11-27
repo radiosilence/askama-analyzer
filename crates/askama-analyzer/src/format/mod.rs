@@ -917,8 +917,8 @@ enum Piece {
     /// An `if` condition chained with `&& let`: each operand's `let … =` head, if it has one,
     /// and its expression.
     Chain(Vec<(Option<std::ops::Range<usize>>, std::ops::Range<usize>)>),
-    /// A macro's name and the text of each of its parameters.
-    Params(std::ops::Range<usize>, Vec<std::ops::Range<usize>>),
+    /// A macro's name and parameters.
+    Params(std::ops::Range<usize>),
     /// The filters of a `filter` tag.
     Filters(std::ops::Range<usize>),
 }
@@ -928,7 +928,7 @@ enum Part {
     Text,
     Expr(layout::Parsed),
     Chain(Vec<(String, layout::Parsed)>),
-    Params(String, Vec<String>),
+    Params(layout::ParsedMacro),
     /// Parsed as `x|…`, the filters applied to a stand-in.
     Filters(layout::Parsed),
 }
@@ -1042,20 +1042,16 @@ fn lay_out_as(
                 }
                 (Part::Chain(chain), flats.join(" && "))
             }
-            Piece::Params(name, items) => {
+            Piece::Params(range) => {
                 checked = true;
-                let name = body[name.clone()].to_owned();
-                let items = items
-                    .iter()
-                    .map(|item| {
-                        // Spaced as in a `macro` tag, so a type's generics stay tight.
-                        let spaced =
-                            format_tokens(&format!("macro {}", &body[item.clone()]), false)?;
-                        spaced.strip_prefix("macro ").map(str::to_owned)
+                let parsed = layout::ParsedMacro::new(&body[range.clone()]);
+                let flat = parsed
+                    .with_macro(|item, source| {
+                        layout::Printer::new(base, base_width, usize::MAX, source)
+                            .macro_params(item, 0, 0, 0)
                     })
-                    .collect::<Option<Vec<_>>>()?;
-                let flat = format!("{name}({})", items.join(", "));
-                (Part::Params(name, items), flat)
+                    .flatten()?;
+                (Part::Params(parsed), flat)
             }
             Piece::Filters(range) => {
                 checked = true;
@@ -1085,8 +1081,9 @@ fn lay_out_as(
             .flatten()?;
         (layout::Parsed::new(&laid).tree()? == parsed.tree()?).then_some(laid)
     };
-    let fits =
-        |flat: &str, col: usize, trail: usize| col + layout::width(flat) + trail <= max_width;
+    let fits = |flat: &str, col: usize, trail: usize| {
+        layout::Printer::new(base, base_width, max_width, "").fits(flat, col, trail)
+    };
     for (index, (part, flat)) in parts.iter().enumerate() {
         if index > 0 {
             out.push(' ');
@@ -1126,22 +1123,12 @@ fn lay_out_as(
                 }
                 text
             }
-            // One parameter per line, each followed by a comma, which askama accepts.
-            Part::Params(name, items) => {
-                let mut text = format!("{name}(");
-                for item in items {
-                    text.push_str(
-                        &layout::Printer::new(base, base_width, max_width, "").newline(level + 1),
-                    );
-                    text.push_str(item);
-                    text.push(',');
-                }
-                text.push_str(
-                    &layout::Printer::new(base, base_width, max_width, "").newline(level),
-                );
-                text.push(')');
-                text
-            }
+            Part::Params(parsed) => parsed
+                .with_macro(|item, source| {
+                    layout::Printer::new(base, base_width, max_width, source)
+                        .macro_params(item, level, col, trail)
+                })
+                .flatten()?,
             Part::Filters(parsed) => {
                 let start = col.checked_sub(layout::width(FILTERED))?;
                 lay(parsed, level, start, trail)?
@@ -1239,31 +1226,12 @@ fn pieces(kind: TagKind, tokens: &[Token<'_>]) -> Option<Vec<Piece>> {
             false => after(at),
         }
     };
-    // A macro's parameters, split at the commas outside any group.
+    // A macro's name and parameters, printed from askama's parse of them.
     let params = || {
         if !is(2, Kind::Punct, "(") || find(3, Kind::Punct, ")")? + 1 != n {
             return None;
         }
-        let mut items = Vec::new();
-        let (mut from, mut depth) = (3, 0usize);
-        for (index, token) in tokens.iter().enumerate().take(n - 1).skip(3) {
-            match token.text {
-                "(" | "[" | "{" => depth += 1,
-                ")" | "]" | "}" => depth = depth.saturating_sub(1),
-                "," if depth == 0 => {
-                    items.push(span(from, index)?);
-                    from = index + 1;
-                }
-                _ => {}
-            }
-        }
-        if let Some(last) = span(from, n - 1) {
-            items.push(last);
-        }
-        Some(vec![
-            Piece::Text(span(0, 1)?),
-            Piece::Params(span(1, 2)?, items),
-        ])
+        Some(vec![Piece::Text(span(0, 1)?), Piece::Params(span(1, n)?)])
     };
     if kind == TagKind::Expression {
         return Some(vec![Piece::Expr(span(0, n)?)]);
@@ -2023,6 +1991,47 @@ mod tests {
         let source = "{% macro card(title: &str, body: Option<String>, footer: Option<String>, attributes: Vec<(String, String)>, classes: &str = \"\") %}{% endmacro %}";
         let expected = "{%\n    macro card(\n        title: &str,\n        body: Option<String>,\n        footer: Option<String>,\n        attributes: Vec<(String, String)>,\n        classes: &str = \"\",\n    )\n%}{% endmacro %}";
         assert_eq!(formatted(source), expected);
+    }
+
+    /// Types are written from askama's parse, so a comma or `>>` inside generics is never
+    /// mistaken for the end of a parameter.
+    #[test]
+    fn macro_parameter_types_with_commas_and_nested_generics_stay_whole() {
+        assert_eq!(
+            formatted("{% macro m(map: HashMap<String, u8>) %}{% endmacro %}"),
+            "{% macro m(map: HashMap<String, u8>) %}{% endmacro %}"
+        );
+        assert_eq!(
+            formatted("{% macro m(map: HashMap<String, Vec<u8>>) %}{% endmacro %}"),
+            "{% macro m(map: HashMap<String, Vec<u8>>) %}{% endmacro %}"
+        );
+        let long = "a".repeat(40);
+        let source = format!(
+            "{{% macro m(map: HashMap<String, Vec<u8>>, {long}: Option<(u8, u16)>, b: u8) %}}{{% endmacro %}}"
+        );
+        assert_eq!(
+            formatted(&source),
+            format!(
+                "{{%\n    macro m(\n        map: HashMap<String, Vec<u8>>,\n        {long}: Option<(u8, u16)>,\n        b: u8,\n    )\n%}}{{% endmacro %}}"
+            )
+        );
+    }
+
+    #[test]
+    fn a_macro_default_is_laid_out_as_an_expression() {
+        let source = "{% macro button(label, action = kit::Button::quiet(\"Download the whole album\").class(\"flex-none\").busy_key(\"download\")) %}{% endmacro %}";
+        let expected = "{%\n    macro button(\n        label,\n        action = kit::Button::quiet(\"Download the whole album\")\n            .class(\"flex-none\")\n            .busy_key(\"download\"),\n    )\n%}{% endmacro %}";
+        assert_eq!(formatted(source), expected);
+        let name = "m".repeat(100);
+        let source = format!("{{% macro {name}() %}}{{% endmacro %}}");
+        assert_eq!(formatted(&source), source);
+    }
+
+    /// A string written over lines is measured line by line.
+    #[test]
+    fn a_chain_holding_a_multi_line_string_is_measured_by_its_lines() {
+        let source = "{% if a && let Some(x) = y(\"line one\nline two\") %}{% endif %}";
+        assert_eq!(formatted(source), source);
     }
 
     #[test]
