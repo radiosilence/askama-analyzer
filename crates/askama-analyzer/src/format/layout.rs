@@ -175,10 +175,13 @@ impl<'s> Printer<'s> {
             }
             Expr::BinOp(_) | Expr::Concat(_) => self.binary(expr, level, col, trail)?,
             Expr::Filter(filter) => self.filter(filter, level, col, trail)?,
-            Expr::Array(items) => {
-                let items: Vec<_> = items.iter().map(|item| Item::Expr(item)).collect();
-                self.list("[", &items, "]", false, level, col, trail)?
-            }
+            Expr::Array(items) => match self.short_items(items) {
+                Some(short) => self.packed(&short, level),
+                None => {
+                    let items: Vec<_> = items.iter().map(|item| Item::Expr(item)).collect();
+                    self.list("[", &items, "]", false, level, col, trail)?
+                }
+            },
             Expr::Tuple(items) if items.len() > 1 => {
                 let items: Vec<_> = items.iter().map(|item| Item::Expr(item)).collect();
                 self.list("(", &items, ")", false, level, col, trail)?
@@ -465,6 +468,46 @@ impl<'s> Printer<'s> {
         Some(out)
     }
 
+    /// The array's items written flat, when every one is a simple expression at most
+    /// [`SHORT_ITEM_WIDTH`] wide: rustfmt packs such arrays rather than giving each item a line.
+    fn short_items(&self, items: &[WithSpan<Box<Expr<'_>>>]) -> Option<Vec<String>> {
+        if items.len() < 2 {
+            return None;
+        }
+        items
+            .iter()
+            .map(|item| {
+                let simple = is_simple(item);
+                self.flat(item)
+                    .filter(|flat| simple && width(flat) <= SHORT_ITEM_WIDTH)
+            })
+            .collect()
+    }
+
+    /// Short items filled onto lines one level in, each followed by a comma, with the closing
+    /// bracket on a line of its own.
+    fn packed(&self, items: &[String], level: usize) -> String {
+        let start = self.column(level + 1);
+        let mut out = "[".to_owned();
+        let mut col = self.max_width;
+        for item in items {
+            let piece = width(item) + 1;
+            if col + 1 + piece > self.max_width {
+                out.push_str(&self.newline(level + 1));
+                col = start;
+            } else {
+                out.push(' ');
+                col += 1;
+            }
+            out.push_str(item);
+            out.push(',');
+            col += piece;
+        }
+        out.push_str(&self.newline(level));
+        out.push(']');
+        out
+    }
+
     fn structure(
         &self,
         structure: &ExprStruct<'_>,
@@ -655,6 +698,28 @@ impl<'s> Printer<'s> {
 }
 
 /// Whether rustfmt lets this expression, as a list's only item, break in place of the list.
+/// rustfmt's `short_array_element_width_threshold`.
+const SHORT_ITEM_WIDTH: usize = 10;
+
+/// rustfmt's simple expression: a literal or path, or field access, `?`, `as`, a prefix
+/// operator or indexing over simple expressions.
+fn is_simple(expr: &Expr<'_>) -> bool {
+    match expr {
+        Expr::BoolLit(_)
+        | Expr::NumLit(..)
+        | Expr::StrLit(_)
+        | Expr::CharLit(_)
+        | Expr::Var(_)
+        | Expr::Path(_) => true,
+        Expr::AssociatedItem(inner, _)
+        | Expr::Try(inner)
+        | Expr::As(inner, _)
+        | Expr::Unary(_, inner) => is_simple(inner),
+        Expr::Index(inner, index) => is_simple(inner) && is_simple(index),
+        _ => false,
+    }
+}
+
 fn overflows(expr: &Expr<'_>) -> bool {
     match expr {
         Expr::Call(_) | Expr::Struct(_) | Expr::Array(_) => true,

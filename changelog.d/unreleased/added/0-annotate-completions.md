@@ -1,0 +1,1 @@
+- **`--annotate` and `completions`.** `check --annotate` and `fmt --check --annotate` print their findings as GitHub Actions annotations, `fmt`'s holding the formatted text, so a workflow shows them on the pull request's diff; `completions SHELL` prints a shell completion script.

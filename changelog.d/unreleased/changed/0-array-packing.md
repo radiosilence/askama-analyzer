@@ -1,0 +1,1 @@
+- **Arrays of short items are packed.** An array too long for its line whose items are all simple expressions at most ten columns wide is filled onto lines, as rustfmt does, instead of given a line per item.

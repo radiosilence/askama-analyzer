@@ -1,10 +1,10 @@
 //! `askama-analyzer`: a language server for askama templates, a `check` command that runs
-//! the same analysis from a terminal, and `fmt`, the template formatter.
+//! the same analysis from a terminal, `fmt`, the template formatter, and `completions`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -25,6 +25,9 @@ enum Command {
         /// Also have this rust-analyzer check the generated code, as the editor does.
         #[arg(long, value_name = "PATH")]
         rust_analyzer: Option<PathBuf>,
+        /// Print each problem as a GitHub Actions annotation.
+        #[arg(long)]
+        annotate: bool,
     },
     /// Format templates in place: the files given, or every file under a `templates`
     /// directory in the directories given. Expressions inside tags are laid out as rustfmt
@@ -35,6 +38,10 @@ enum Command {
         /// writing them.
         #[arg(long)]
         check: bool,
+        /// With `--check`, print each unformatted run of lines as a GitHub Actions
+        /// annotation holding the formatted text, instead of listing the templates.
+        #[arg(long, requires = "check")]
+        annotate: bool,
         /// The width lines are kept to.
         #[arg(long, default_value_t = 100)]
         max_width: usize,
@@ -44,6 +51,8 @@ enum Command {
         #[arg(default_value = ".")]
         paths: Vec<PathBuf>,
     },
+    /// Print the completion script for SHELL.
+    Completions { shell: clap_complete::Shell },
 }
 
 fn main() -> ExitCode {
@@ -58,6 +67,15 @@ fn main() -> ExitCode {
         .init();
 
     let cli = Cli::parse();
+    if let Some(Command::Completions { shell }) = cli.command {
+        clap_complete::generate(
+            shell,
+            &mut Cli::command(),
+            "askama-analyzer",
+            &mut std::io::stdout(),
+        );
+        return ExitCode::SUCCESS;
+    }
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -73,13 +91,16 @@ fn main() -> ExitCode {
         Command::Check {
             path,
             rust_analyzer,
-        } => runtime.block_on(askama_analyzer::check::run(&path, rust_analyzer)),
+            annotate,
+        } => runtime.block_on(askama_analyzer::check::run(&path, rust_analyzer, annotate)),
         Command::Fmt {
             check,
+            annotate,
             max_width,
             no_indent_html,
             paths,
-        } => askama_analyzer::format::run(check, &paths, max_width, !no_indent_html),
+        } => askama_analyzer::format::run(check, annotate, &paths, max_width, !no_indent_html),
+        Command::Completions { .. } => unreachable!("handled before the runtime starts"),
     };
     match result {
         Ok(code) => code,

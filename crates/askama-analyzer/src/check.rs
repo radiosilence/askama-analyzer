@@ -24,7 +24,11 @@ const LOAD: Duration = Duration::from_secs(15 * 60);
 /// has published them all.
 const QUIET: Duration = Duration::from_secs(5);
 
-pub async fn run(root: &Path, rust_analyzer: Option<PathBuf>) -> anyhow::Result<ExitCode> {
+pub async fn run(
+    root: &Path,
+    rust_analyzer: Option<PathBuf>,
+    annotate: bool,
+) -> anyhow::Result<ExitCode> {
     let root = root
         .canonicalize()
         .with_context(|| format!("finding {}", root.display()))?;
@@ -39,12 +43,23 @@ pub async fn run(root: &Path, rust_analyzer: Option<PathBuf>) -> anyhow::Result<
         let shown = path.strip_prefix(&root).unwrap_or(path).display();
         for problem in list {
             let (line, column) = line_column(&text, problem.range.start);
-            println!("{shown}:{line}:{column}: {}", problem.message);
+            if annotate {
+                let shown = shown.to_string();
+                let annotation = annotation(&shown, line, None, Some(column), &problem.message);
+                println!("{annotation}");
+            } else {
+                println!("{shown}:{line}:{column}: {}", problem.message);
+            }
             count += 1;
         }
     }
     for (name, failure) in workspace.analysis.failures() {
-        println!("{name}: askama-analyzer could not generate this item: {failure}");
+        let message = format!("{name}: askama-analyzer could not generate this item: {failure}");
+        if annotate {
+            println!("::error::{}", escape(&message, false));
+        } else {
+            println!("{message}");
+        }
         count += 1;
     }
     eprintln!(
@@ -105,4 +120,40 @@ fn line_column(text: &str, offset: usize) -> (usize, usize) {
         .map_or(0, |line| line.chars().count())
         + 1;
     (line, column)
+}
+
+/// A GitHub Actions workflow command marking an error in `file` at `line` (from 1), through
+/// `end_line` when given, at `column` when given.
+pub(crate) fn annotation(
+    file: &str,
+    line: usize,
+    end_line: Option<usize>,
+    column: Option<usize>,
+    message: &str,
+) -> String {
+    let mut properties = format!("file={},line={line}", escape(file, true));
+    if let Some(end_line) = end_line {
+        properties.push_str(&format!(",endLine={end_line}"));
+    }
+    if let Some(column) = column {
+        properties.push_str(&format!(",col={column}"));
+    }
+    format!("::error {properties}::{}", escape(message, false))
+}
+
+/// `text` escaped as GitHub Actions requires in a workflow command's message, or in a property
+/// value, where `:` and `,` are separators too.
+pub(crate) fn escape(text: &str, property: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '%' => out.push_str("%25"),
+            '\r' => out.push_str("%0D"),
+            '\n' => out.push_str("%0A"),
+            ':' if property => out.push_str("%3A"),
+            ',' if property => out.push_str("%2C"),
+            c => out.push(c),
+        }
+    }
+    out
 }
