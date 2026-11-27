@@ -910,10 +910,43 @@ fn render(
     }
 }
 
-/// A part of a tag: its own words, spaced as tokens, or an expression, laid out.
+/// A part of a tag: its own words, spaced as tokens, or something the printer lays out.
 enum Piece {
     Text(std::ops::Range<usize>),
     Expr(std::ops::Range<usize>),
+    /// An `if` condition chained with `&& let`: each operand's `let … =` head, if it has one,
+    /// and its expression.
+    Chain(Vec<(Option<std::ops::Range<usize>>, std::ops::Range<usize>)>),
+    /// A macro's name and parameters.
+    Params(std::ops::Range<usize>),
+    /// The filters of a `filter` tag.
+    Filters(std::ops::Range<usize>),
+}
+
+/// A piece ready to lay out.
+enum Part {
+    Text,
+    Expr(layout::Parsed),
+    Chain(Vec<(String, layout::Parsed)>),
+    Params(layout::ParsedMacro),
+    /// Parsed as `x|…`, the filters applied to a stand-in.
+    Filters(layout::Parsed),
+}
+
+/// A `filter` tag's filters are parsed as filters applied to this stand-in, which the layout
+/// then drops.
+const FILTERED: &str = "x|";
+
+/// The tree of a block tag whose inside is `inner`, closed so that it parses on its own.
+fn block_tree(inner: &str, word: &str) -> Option<String> {
+    let source = match word {
+        "macro" => format!("{{%{inner}%}}{{% endmacro %}}"),
+        "filter" => format!("{{%{inner}%}}{{% endfilter %}}"),
+        "if" => format!("{{%{inner}%}}{{% endif %}}"),
+        _ => format!("{{% if true %}}{{%{inner}%}}{{% endif %}}"),
+    };
+    let ast = Ast::from_str(&source, None, &Syntax::default()).ok()?;
+    Some(format!("{:?}", ast.nodes()))
 }
 
 /// The inside of a tag that starts after `line` (the text before it on its line), with its
@@ -976,16 +1009,55 @@ fn lay_out_as(
     };
     let level = usize::from(broken);
 
+    let expr_flat = |parsed: &layout::Parsed| {
+        parsed
+            .with_expr(|expr, source| {
+                layout::Printer::new(base, base_width, max_width, source).flat(expr)
+            })
+            .flatten()
+    };
+
     let mut parts = Vec::with_capacity(pieces.len());
+    let mut checked = false;
     for piece in &pieces {
         parts.push(match piece {
-            Piece::Text(range) => (None, format_tokens(&body[range.clone()], false)?),
+            Piece::Text(range) => (Part::Text, format_tokens(&body[range.clone()], false)?),
             Piece::Expr(range) => {
                 let parsed = layout::Parsed::new(&body[range.clone()]);
-                let flat = parsed.with_expr(|expr, source| {
-                    layout::Printer::new(base, base_width, max_width, source).flat(expr)
-                })??;
-                (Some(parsed), flat)
+                let flat = expr_flat(&parsed)?;
+                (Part::Expr(parsed), flat)
+            }
+            Piece::Chain(operands) => {
+                checked = true;
+                let mut chain = Vec::with_capacity(operands.len());
+                let mut flats = Vec::with_capacity(operands.len());
+                for (head, expr) in operands {
+                    let head = match head {
+                        Some(head) => format!("{} ", format_tokens(&body[head.clone()], false)?),
+                        None => String::new(),
+                    };
+                    let parsed = layout::Parsed::new(&body[expr.clone()]);
+                    flats.push(format!("{head}{}", expr_flat(&parsed)?));
+                    chain.push((head, parsed));
+                }
+                (Part::Chain(chain), flats.join(" && "))
+            }
+            Piece::Params(range) => {
+                checked = true;
+                let parsed = layout::ParsedMacro::new(&body[range.clone()]);
+                let flat = parsed
+                    .with_macro(|item, source| {
+                        layout::Printer::new(base, base_width, usize::MAX, source)
+                            .macro_params(item, 0, 0, 0)
+                    })
+                    .flatten()?;
+                (Part::Params(parsed), flat)
+            }
+            Piece::Filters(range) => {
+                checked = true;
+                let parsed = layout::Parsed::new(&format!("{FILTERED}{}", &body[range.clone()]));
+                let flat = expr_flat(&parsed)?.strip_prefix(FILTERED)?.to_owned();
+                (Part::Filters(parsed), flat)
             }
         });
     }
@@ -999,7 +1071,20 @@ fn lay_out_as(
             1 + columns(close),
         )
     };
-    for (index, (parsed, flat)) in parts.iter().enumerate() {
+    // An expression laid out must read back as the same tree.
+    let lay = |parsed: &layout::Parsed, level: usize, col: usize, trail: usize| {
+        let laid = parsed
+            .with_expr(|expr, source| {
+                layout::Printer::new(base, base_width, max_width, source)
+                    .layout(expr, level, col, trail)
+            })
+            .flatten()?;
+        (layout::Parsed::new(&laid).tree()? == parsed.tree()?).then_some(laid)
+    };
+    let fits = |flat: &str, col: usize, trail: usize| {
+        layout::Printer::new(base, base_width, max_width, "").fits(flat, col, trail)
+    };
+    for (index, (part, flat)) in parts.iter().enumerate() {
         if index > 0 {
             out.push(' ');
             col += 1;
@@ -1009,17 +1094,46 @@ fn lay_out_as(
             .map(|(_, flat)| 1 + layout::width(flat))
             .sum::<usize>()
             + close_width;
-        let text = match parsed {
-            None => flat.clone(),
-            Some(parsed) => {
-                let laid = parsed.with_expr(|expr, source| {
-                    layout::Printer::new(base, base_width, max_width, source)
-                        .layout(expr, level, col, trail)
-                })??;
-                if layout::Parsed::new(&laid).tree()? != parsed.tree()? {
-                    return None;
+        let text = match part {
+            Part::Text => flat.clone(),
+            Part::Expr(parsed) => lay(parsed, level, col, trail)?,
+            _ if fits(flat, col, trail) => flat.clone(),
+            // Broken before each `&&`, as rustfmt breaks a let chain.
+            Part::Chain(chain) => {
+                let mut text = String::new();
+                for (at, (head, parsed)) in chain.iter().enumerate() {
+                    let last = at + 1 == chain.len();
+                    let (level, start) = if at == 0 {
+                        (level, col)
+                    } else {
+                        text.push_str(
+                            &layout::Printer::new(base, base_width, max_width, "")
+                                .newline(level + 1),
+                        );
+                        text.push_str("&& ");
+                        (
+                            level + 1,
+                            layout::Printer::new(base, base_width, max_width, "").column(level + 1)
+                                + 3,
+                        )
+                    };
+                    text.push_str(head);
+                    let trail = if last { trail } else { 0 };
+                    text.push_str(&lay(parsed, level, start + layout::width(head), trail)?);
                 }
-                laid
+                text
+            }
+            Part::Params(parsed) => parsed
+                .with_macro(|item, source| {
+                    layout::Printer::new(base, base_width, max_width, source)
+                        .macro_params(item, level, col, trail)
+                })
+                .flatten()?,
+            Part::Filters(parsed) => {
+                let start = col.checked_sub(layout::width(FILTERED))?;
+                lay(parsed, level, start, trail)?
+                    .strip_prefix(FILTERED)?
+                    .to_owned()
             }
         };
         col = layout::Printer::new(base, base_width, max_width, "").end_column(&text, col);
@@ -1030,6 +1144,13 @@ fn lay_out_as(
         out.push_str(base);
     } else {
         out.push(' ');
+    }
+    // What is laid out from tokens rather than one expression is checked as a whole tag.
+    if checked {
+        let word = first_word(body);
+        if block_tree(&out, word)? != block_tree(body, word)? {
+            return None;
+        }
     }
     Some(out)
 }
@@ -1062,9 +1183,55 @@ fn pieces(kind: TagKind, tokens: &[Token<'_>]) -> Option<Vec<Piece>> {
     };
     // A text and the expression after it.
     let after = |at: usize| Some(vec![Piece::Text(span(0, at)?), Piece::Expr(span(at, n)?)]);
-    let condition = |at: usize| match is(at, Kind::Word, "let") {
-        true => after(find(at, Kind::Punct, "=")? + 1),
-        false => after(at),
+    // A condition chained with `&& let`: its operands, split at the `&&` outside any group.
+    let chain = |at: usize| {
+        let mut operands = Vec::new();
+        let (mut from, mut depth) = (at, 0usize);
+        for (index, token) in tokens.iter().enumerate().skip(at) {
+            match token.text {
+                "(" | "[" | "{" => depth += 1,
+                ")" | "]" | "}" => depth = depth.saturating_sub(1),
+                "||" if depth == 0 => return None,
+                "&&" if depth == 0 && token.kind == Kind::Punct => {
+                    operands.push((from, index));
+                    from = index + 1;
+                }
+                _ => {}
+            }
+        }
+        operands.push((from, n));
+        let lets = |&(from, _): &(usize, usize)| {
+            is(from, Kind::Word, "let") || is(from, Kind::Word, "set")
+        };
+        if !operands.iter().skip(1).any(lets) {
+            return None;
+        }
+        operands
+            .iter()
+            .map(|operand @ &(from, to)| match lets(operand) {
+                true => {
+                    let eq = find(from, Kind::Punct, "=").filter(|&eq| eq < to)?;
+                    Some((Some(span(from, eq + 1)?), span(eq + 1, to)?))
+                }
+                false => Some((None, span(from, to)?)),
+            })
+            .collect::<Option<Vec<_>>>()
+    };
+    let condition = |at: usize| {
+        if let Some(chain) = chain(at) {
+            return Some(vec![Piece::Text(span(0, at)?), Piece::Chain(chain)]);
+        }
+        match is(at, Kind::Word, "let") {
+            true => after(find(at, Kind::Punct, "=")? + 1),
+            false => after(at),
+        }
+    };
+    // A macro's name and parameters, printed from askama's parse of them.
+    let params = || {
+        if !is(2, Kind::Punct, "(") || find(3, Kind::Punct, ")")? + 1 != n {
+            return None;
+        }
+        Some(vec![Piece::Text(span(0, 1)?), Piece::Params(span(1, n)?)])
     };
     if kind == TagKind::Expression {
         return Some(vec![Piece::Expr(span(0, n)?)]);
@@ -1085,7 +1252,9 @@ fn pieces(kind: TagKind, tokens: &[Token<'_>]) -> Option<Vec<Piece>> {
             }
         }
         "let" | "set" => after(find(1, Kind::Punct, "=")? + 1),
-        "match" | "macro" => after(1),
+        "macro" => params().or_else(|| after(1)),
+        "filter" => Some(vec![Piece::Text(span(0, 1)?), Piece::Filters(span(1, n)?)]),
+        "match" => after(1),
         "call" if is(1, Kind::Punct, "(") => after(find(2, Kind::Punct, ")")? + 1),
         "call" => after(1),
         _ => None,
@@ -1810,6 +1979,83 @@ mod tests {
     fn whitespace_control_markers_stay_on_a_broken_tag() {
         let source = "{{- f(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) ~}}";
         let expected = "{{-\n    f(\n        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n    )\n~}}";
+        assert_eq!(formatted(source), expected);
+    }
+
+    #[test]
+    fn typed_macro_parameters_go_one_per_line_when_they_do_not_fit() {
+        assert_eq!(
+            formatted("{% macro m( a : &str , b : Option< u8 > = 1 ) %}{% endmacro %}"),
+            "{% macro m(a: &str, b: Option<u8> = 1) %}{% endmacro %}"
+        );
+        let source = "{% macro card(title: &str, body: Option<String>, footer: Option<String>, attributes: Vec<(String, String)>, classes: &str = \"\") %}{% endmacro %}";
+        let expected = "{%\n    macro card(\n        title: &str,\n        body: Option<String>,\n        footer: Option<String>,\n        attributes: Vec<(String, String)>,\n        classes: &str = \"\",\n    )\n%}{% endmacro %}";
+        assert_eq!(formatted(source), expected);
+    }
+
+    /// Types are written from askama's parse, so a comma or `>>` inside generics is never
+    /// mistaken for the end of a parameter.
+    #[test]
+    fn macro_parameter_types_with_commas_and_nested_generics_stay_whole() {
+        assert_eq!(
+            formatted("{% macro m(map: HashMap<String, u8>) %}{% endmacro %}"),
+            "{% macro m(map: HashMap<String, u8>) %}{% endmacro %}"
+        );
+        assert_eq!(
+            formatted("{% macro m(map: HashMap<String, Vec<u8>>) %}{% endmacro %}"),
+            "{% macro m(map: HashMap<String, Vec<u8>>) %}{% endmacro %}"
+        );
+        let long = "a".repeat(40);
+        let source = format!(
+            "{{% macro m(map: HashMap<String, Vec<u8>>, {long}: Option<(u8, u16)>, b: u8) %}}{{% endmacro %}}"
+        );
+        assert_eq!(
+            formatted(&source),
+            format!(
+                "{{%\n    macro m(\n        map: HashMap<String, Vec<u8>>,\n        {long}: Option<(u8, u16)>,\n        b: u8,\n    )\n%}}{{% endmacro %}}"
+            )
+        );
+    }
+
+    #[test]
+    fn a_macro_default_is_laid_out_as_an_expression() {
+        let source = "{% macro button(label, action = kit::Button::quiet(\"Download the whole album\").class(\"flex-none\").busy_key(\"download\")) %}{% endmacro %}";
+        let expected = "{%\n    macro button(\n        label,\n        action = kit::Button::quiet(\"Download the whole album\")\n            .class(\"flex-none\")\n            .busy_key(\"download\"),\n    )\n%}{% endmacro %}";
+        assert_eq!(formatted(source), expected);
+        let name = "m".repeat(100);
+        let source = format!("{{% macro {name}() %}}{{% endmacro %}}");
+        assert_eq!(formatted(&source), source);
+    }
+
+    /// A string written over lines is measured line by line.
+    #[test]
+    fn a_chain_holding_a_multi_line_string_is_measured_by_its_lines() {
+        let source = "{% if a && let Some(x) = y(\"line one\nline two\") %}{% endif %}";
+        assert_eq!(formatted(source), source);
+    }
+
+    #[test]
+    fn filter_tags_lay_out_their_filters() {
+        assert_eq!(
+            formatted("{% filter upper|truncate( 3 ) %}{% endfilter %}"),
+            "{% filter upper|truncate(3) %}{% endfilter %}"
+        );
+        let source = "{% filter kit::wrap(kit::Disclosure::new(\"spectral analysis\").class(\"mt-2\").ignore_morph().attr(\"data-x\", \"yyyyyyyyy\")) %}{% endfilter %}";
+        let expected = "{%\n    filter kit::wrap(\n        kit::Disclosure::new(\"spectral analysis\")\n            .class(\"mt-2\")\n            .ignore_morph()\n            .attr(\"data-x\", \"yyyyyyyyy\"),\n    )\n%}{% endfilter %}";
+        assert_eq!(formatted(source), expected);
+    }
+
+    #[test]
+    fn let_chains_break_before_each_and() {
+        assert_eq!(
+            formatted("{% if a&&let Some( x ) = y %}{% endif %}"),
+            "{% if a && let Some(x) = y %}{% endif %}"
+        );
+        let source = "{% if user.is_admin() && let Some(team) = user.team() && team.members.len() > 1 && let Some(owner) = team.owner() %}{% endif %}";
+        let expected = "{%\n    if user.is_admin()\n        && let Some(team) = user.team()\n        && team.members.len() > 1\n        && let Some(owner) = team.owner()\n%}{% endif %}";
+        assert_eq!(formatted(source), expected);
+        let source = "{%- if let Some(team) = user.team() && let Some(owner) = team.owner() && owner.name.len() > 1 && owner.ok() -%}{% endif %}";
+        let expected = "{%-\n    if let Some(team) = user.team()\n        && let Some(owner) = team.owner()\n        && owner.name.len() > 1\n        && owner.ok()\n-%}{% endif %}";
         assert_eq!(formatted(source), expected);
     }
 

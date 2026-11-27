@@ -9,6 +9,7 @@
 //! the tag starts on, as rustfmt indents blocks from the statement's indentation.
 
 use askama_parser::expr::{AssociatedItem, Call, ExprStruct};
+use askama_parser::node::{Macro, MacroArg};
 use askama_parser::{
     Ast, CharPrefix, Expr, Filter, Node, PathComponent, PathOrIdentifier, Syntax, TyGenerics,
     TyGenericsKind, WithSpan,
@@ -43,6 +44,31 @@ impl Parsed {
         match ast.nodes() {
             [node] => match &**node {
                 Node::Expr(_, expr) => Some(f(expr, &self.source)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+/// A `macro` tag's name and parameters, parsed on their own from
+/// `{% macro … %}{% endmacro %}`.
+pub(super) struct ParsedMacro {
+    source: String,
+}
+
+impl ParsedMacro {
+    pub(super) fn new(text: &str) -> Self {
+        Self {
+            source: format!("{{% macro {text} %}}{{% endmacro %}}"),
+        }
+    }
+
+    pub(super) fn with_macro<T>(&self, f: impl FnOnce(&Macro<'_>, &str) -> T) -> Option<T> {
+        let ast = Ast::from_str(&self.source, None, &Syntax::default()).ok()?;
+        match ast.nodes() {
+            [node] => match &**node {
+                Node::Macro(item) => Some(f(item, &self.source)),
                 _ => None,
             },
             _ => None,
@@ -89,11 +115,11 @@ impl<'s> Printer<'s> {
         }
     }
 
-    fn newline(&self, level: usize) -> String {
+    pub(super) fn newline(&self, level: usize) -> String {
         format!("\n{}{}", self.base, " ".repeat(INDENT * level))
     }
 
-    fn column(&self, level: usize) -> usize {
+    pub(super) fn column(&self, level: usize) -> usize {
         self.base_width + INDENT * level
     }
 
@@ -113,7 +139,7 @@ impl<'s> Printer<'s> {
     }
 
     /// Whether `text`, starting at `col` and followed by `trail` columns, stays in the width.
-    fn fits(&self, text: &str, col: usize, trail: usize) -> bool {
+    pub(super) fn fits(&self, text: &str, col: usize, trail: usize) -> bool {
         let mut lines = text.split('\n');
         let first = lines.next().unwrap_or_default();
         let mut last = col + width(first);
@@ -334,6 +360,49 @@ impl<'s> Printer<'s> {
             }
             Item::Base(base) => Some(format!("..{}", self.layout(base, level, col + 2, trail)?)),
         }
+    }
+
+    /// A macro's name and parameters, each written from the tree: `name: Type = default`.
+    /// On one line, or one parameter per line followed by a comma (askama accepts one after
+    /// the last), each default laid out as an expression; a macro with none stays `name()`.
+    pub(super) fn macro_params(
+        &self,
+        item: &Macro<'_>,
+        level: usize,
+        col: usize,
+        trail: usize,
+    ) -> Option<String> {
+        let head = |arg: &MacroArg<'_>| {
+            let ty = arg.ty.as_ref().map(|ty| format!(": {}", type_name(ty)));
+            format!("{}{}", *arg.name, ty.unwrap_or_default())
+        };
+        let flat = item
+            .args
+            .iter()
+            .map(|arg| match &arg.default {
+                Some(default) => Some(format!("{} = {}", head(arg), self.flat(default)?)),
+                None => Some(head(arg)),
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let flat = format!("{}({})", *item.name, flat.join(", "));
+        if item.args.is_empty() || self.fits(&flat, col, trail) {
+            return Some(flat);
+        }
+        let mut out = format!("{}(", *item.name);
+        for arg in &item.args {
+            out.push_str(&self.newline(level + 1));
+            let head = head(arg);
+            out.push_str(&head);
+            if let Some(default) = &arg.default {
+                out.push_str(" = ");
+                let start = self.column(level + 1) + width(&head) + 3;
+                out.push_str(&self.layout(default, level + 1, start, 1)?);
+            }
+            out.push(',');
+        }
+        out.push_str(&self.newline(level));
+        out.push(')');
+        Some(out)
     }
 
     /// A delimited, comma-separated list: on one line; or its one call-like item broken in

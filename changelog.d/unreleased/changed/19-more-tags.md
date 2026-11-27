@@ -1,0 +1,1 @@
+- **Typed macro parameters, `filter` tags and let chains are laid out.** A `macro` tag's typed parameters go one per line when they do not fit, a `filter` tag's filters are laid out like an expression's, and an `if` condition chained with `&& let` breaks before each `&&`; before, these tags only had their spacing normalised.
