@@ -48,7 +48,7 @@ Only the amount of whitespace starting each line changes, which HTML renders the
 The repository is an action that downloads a release, checks it against the release's `SHA256SUMS`, caches it, and runs `fmt --check --annotate` (and, when asked, `check --annotate`), so unformatted runs of lines and template errors appear on the pull request's diff:
 
 ```yaml
-- uses: radiosilence/askama-analyzer@main
+- uses: radiosilence/askama-analyzer@main # !! for supply-chain security, pin this to a specific hash for a tag and update regularly
   with:
     paths: .          # what `fmt` checks
     check: false      # also run `check` over the Cargo workspace at `workspace`; needs a Rust toolchain
