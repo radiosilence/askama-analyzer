@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+### Fixed
+
+- **The formatter writes `Vec<u8> = v` and keeps a start tag whole before dense content.** A typed `let` written `Vec<u8>= v` came out as `Vec<u8 >= v`, which reads as a comparison, and a start tag that begins a long line was split onto attribute lines even when the content after its `>` stayed as long as before.
+
 ## 0.3.0
 
 ### Added
@@ -9,7 +15,6 @@
 ### Fixed
 
 - **Renames reach templates, and a rename that cannot work says why.** Renaming a field from a template now renames its uses in templates as well as in Rust, and a name rust-analyzer will not rename, such as one from a dependency, is refused with its reason instead of opening a rename that does nothing. Errors on a field now sit on its name rather than the whole access.
-- **The formatter writes `Vec<u8> = v` and keeps a start tag whole before dense content.** A typed `let` written `Vec<u8>= v` came out as `Vec<u8 >= v`, which reads as a comparison, and a start tag that begins a long line was split onto attribute lines even when the content after its `>` stayed as long as before.
 
 ## 0.2.1
 
