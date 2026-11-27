@@ -458,5 +458,5 @@ fn offsets_after_non_ascii_text_count_bytes() {
         .filter(|mapping| &generated.code[mapping.generated.clone()] == "name")
         .filter_map(|mapping| template_range(&mapping.origin, "page.html"))
         .collect();
-    assert_eq!(mapped, [field..field + 4]);
+    assert_eq!(mapped, vec![field..field + 4]);
 }
