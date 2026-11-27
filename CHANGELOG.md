@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1
+
+### Added
+
+- **A GitHub Action.** `uses: radiosilence/askama-analyzer@main` downloads a verified release and runs `fmt --check --annotate`, and optionally `check --annotate`, so a workflow checks templates in one step and shows what it finds on the diff.
+
+### Fixed
+
+- **Positions after non-ASCII text.** Diagnostics, hover, go-to-definition and rename landed too far right on template lines after characters such as `·` or curly quotes, by one byte per extra UTF-8 byte before them; the askama fork now hands proc-macro2 the character offsets it expects.
+
 ## 0.7.0
 
 ### Added
