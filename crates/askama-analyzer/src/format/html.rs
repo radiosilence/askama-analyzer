@@ -5,9 +5,13 @@
 //! break followed by any amount of whitespace renders as the same single space, so the page
 //! cannot change. The first line, which no line break precedes, keeps its whitespace, and so do
 //! the places where whitespace is kept as written, line by line: `<pre>`, `<textarea>`,
-//! `<script>` and `<style>` contents, HTML comments, `raw` blocks, askama comments, and lines
-//! that continue a tag (an askama tag's are laid out with its expression; an HTML tag's move
-//! with the line the tag starts on, unless they start inside an attribute's value).
+//! `<script>` and `<style>` contents, HTML comments, `raw` blocks, and lines that continue an
+//! askama tag, which are laid out with its expression. Lines that continue an askama comment,
+//! or an HTML tag (unless they start inside an attribute's value), move with the line the
+//! comment or tag starts on.
+//!
+//! `start_tags` finds the HTML start tags a long line may break between attributes, which is
+//! whitespace HTML never renders either.
 
 use std::ops::Range;
 

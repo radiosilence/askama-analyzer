@@ -38,7 +38,7 @@ One workflow, `.github/workflows/ci-cd.yml`, ending in `Checks`, the only requir
 - **The release archive names are a contract with the editors that download them.** zed-askama's `server_asset` downloads `askama-analyzer-<target>.tar.gz` (or `.zip` on Windows) from this repository's latest release by name; the `build` job in `ci-cd.yml` must produce exactly those.
 - **The initialization options are a contract with the Zed extension.** `rustAnalyzer: { path, args, env, initializationOptions, settings }` (`ra::Config`) is read leniently, so the extension and the server release independently; a field is added, never renamed.
 - **`vendor/askama-testing` is askama's test suite at the pinned release**, written by `scripts/vendor-askama-testing.py`; the generator's and the formatter's corpus tests read it.
-- **The formatter changes only what is never rendered.** Whitespace inside tags, and in HTML templates only the amount of leading whitespace on existing lines, outside `<pre>`, `<textarea>`, `<script>`, `<style>`, `raw` blocks and comments. It checks the tree, the stripped lines and a second pass, and refuses otherwise.
+- **The formatter changes only what is never rendered.** Whitespace inside askama tags; and in HTML templates, the whitespace between a start tag's attributes and the amount of leading whitespace on existing lines, outside `<pre>`, `<textarea>`, `<script>`, `<style>` and `raw` blocks. It checks the tree, the stripped lines, the text between tags and a second pass, and refuses otherwise.
 - **`askama-analyzer-codegen` does no I/O.** Files reach it through its `Files` trait, so unsaved buffers are what askama reads.
 
 ## Where things live
