@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The formatter lays out long expressions and indents HTML.** Expressions inside tags are broken over lines as rustfmt breaks Rust, to `--max-width` or `format.maxWidth` (100), and HTML templates are re-indented by nesting depth, which changes only how much whitespace starts each line and so never what the page renders.
+
 ## 0.2.1
 
 ### Fixed
