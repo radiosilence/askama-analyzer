@@ -78,6 +78,8 @@ pub async fn run() -> anyhow::Result<ExitCode> {
             encoding: Encoding::Utf16,
             roots: Vec::new(),
             config: Config::default(),
+            max_width: crate::format::Options::default().max_width,
+            indent_html: true,
             queries,
             inbox: Some(inbox),
         };
@@ -101,6 +103,10 @@ struct State {
     encoding: Encoding,
     roots: Vec<PathBuf>,
     config: Config,
+    /// The formatter's line width: the initialization option `format.maxWidth`.
+    max_width: usize,
+    /// Whether HTML templates are re-indented: the initialization option `format.indentHtml`.
+    indent_html: bool,
     queries: mpsc::Sender<Query>,
     /// Handed to the lane when it starts.
     inbox: Option<mpsc::Receiver<Query>>,
@@ -290,14 +296,26 @@ fn ask<T: Send + 'static, Q: FnOnce(oneshot::Sender<features::Answer<T>>) -> Que
 /// The whole document's formatting as one edit, or none when it is formatted already. Only
 /// Askama documents are formatted: HTML and Rust have formatters of their own. A template the
 /// formatter refuses (it does not parse, or formatting would change what it means) is left as
-/// it is.
+/// it is. HTML templates are indented by their `.editorconfig`, as `fmt` indents them, rather
+/// than by the request's options, so the editor and `fmt --check` agree; the templates they
+/// extend are read from the open buffers, over the disk.
 fn format_document(state: &State, uri: &Url) -> Option<Vec<lsp_types::TextEdit>> {
     let path = file_path(uri)?;
-    let doc = state.shared.inner.lock().docs.get(&path).cloned()?;
+    let (doc, files) = {
+        let inner = state.shared.inner.lock();
+        let doc = inner.docs.get(&path).cloned()?;
+        let mut vfs = crate::vfs::Vfs::default();
+        for (open, other) in &inner.docs {
+            vfs.set(open.clone(), Arc::clone(&other.text));
+        }
+        (doc, vfs.snapshot())
+    };
     if doc.language != ASKAMA_LANGUAGE {
         return None;
     }
-    let formatted = match crate::format::format(&doc.text, &askama_parser::Syntax::default()) {
+    let options = crate::format::options_for(&path, state.max_width, state.indent_html);
+    let syntax = askama_parser::Syntax::default();
+    let formatted = match crate::format::format_in(&doc.text, &path, &files, &syntax, &options) {
         Ok(formatted) => formatted,
         Err(err) => {
             tracing::debug!(path = %path.display(), %err, "not formatting");
@@ -323,6 +341,23 @@ fn initialize(state: &mut State, params: &InitializeParams) -> InitializeResult 
             .and_then(|general| general.position_encodings.as_deref()),
     );
     state.config = Config::from_initialization_options(params.initialization_options.as_ref());
+    if let Some(max_width) = params
+        .initialization_options
+        .as_ref()
+        .and_then(|options| options.pointer("/format/maxWidth"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|width| usize::try_from(width).ok())
+    {
+        state.max_width = max_width;
+    }
+    if let Some(indent_html) = params
+        .initialization_options
+        .as_ref()
+        .and_then(|options| options.pointer("/format/indentHtml"))
+        .and_then(serde_json::Value::as_bool)
+    {
+        state.indent_html = indent_html;
+    }
     let progress = params
         .capabilities
         .window

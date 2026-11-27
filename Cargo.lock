@@ -77,6 +77,7 @@ dependencies = [
  "async-lsp",
  "cargo_metadata",
  "clap",
+ "ec4rs",
  "futures",
  "line-index",
  "lsp-types",
@@ -275,6 +276,12 @@ dependencies = [
  "quote",
  "syn 3.0.10",
 ]
+
+[[package]]
+name = "ec4rs"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b31a881d38439026e3d5dd938ab20328d36e23caca8fd5981c42e4b677f5842"
 
 [[package]]
 name = "errno"

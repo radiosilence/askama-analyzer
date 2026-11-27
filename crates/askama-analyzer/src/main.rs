@@ -27,12 +27,20 @@ enum Command {
         rust_analyzer: Option<PathBuf>,
     },
     /// Format templates in place: the files given, or every file under a `templates`
-    /// directory in the directories given. Only the inside of tags changes.
+    /// directory in the directories given. Expressions inside tags are laid out as rustfmt
+    /// lays out Rust, and HTML templates are re-indented by nesting depth, by the indentation
+    /// their `.editorconfig` sets (2 spaces when it sets none).
     Fmt {
         /// List the templates that are not formatted, and exit 1 if there are any, instead of
         /// writing them.
         #[arg(long)]
         check: bool,
+        /// The width lines are kept to.
+        #[arg(long, default_value_t = 100)]
+        max_width: usize,
+        /// Leave the indentation outside tags as written in HTML templates.
+        #[arg(long)]
+        no_indent_html: bool,
         #[arg(default_value = ".")]
         paths: Vec<PathBuf>,
     },
@@ -66,7 +74,12 @@ fn main() -> ExitCode {
             path,
             rust_analyzer,
         } => runtime.block_on(askama_analyzer::check::run(&path, rust_analyzer)),
-        Command::Fmt { check, paths } => askama_analyzer::format::run(check, &paths),
+        Command::Fmt {
+            check,
+            max_width,
+            no_indent_html,
+            paths,
+        } => askama_analyzer::format::run(check, &paths, max_width, !no_indent_html),
     };
     match result {
         Ok(code) => code,

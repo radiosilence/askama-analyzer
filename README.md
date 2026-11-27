@@ -28,12 +28,18 @@ It needs `rust-analyzer`, from the client's initialization options or the `PATH`
   ```
 
   The plugin attaches to `.html`, `.htm`, `.txt` and `.md` files as well as `.askama`, since that is how templates are named; in a file no template struct reads, the server does nothing. It leaves `.rs` files to rust-analyzer.
-- **Anything else** that speaks LSP: run `askama-analyzer` on stdio for template files. rust-analyzer's path, arguments, environment and settings can be passed as `initializationOptions.rustAnalyzer` (`path`, `args`, `env`, `initializationOptions`, `settings`).
+- **Anything else** that speaks LSP: run `askama-analyzer` on stdio for template files. rust-analyzer's path, arguments, environment and settings can be passed as `initializationOptions.rustAnalyzer` (`path`, `args`, `env`, `initializationOptions`, `settings`), and the formatter's settings as `initializationOptions.format`: `maxWidth` (100 by default) and `indentHtml` (`true` by default; `false` leaves HTML templates' indentation outside tags as written).
 
 ## On the command line
 
 - `askama-analyzer check [--rust-analyzer PATH] [PATH]` prints every template error in a Cargo workspace and exits 1 if there are any. askama's own errors need nothing else; given a rust-analyzer, it also reports the type errors rust-analyzer finds in the generated code, as an editor shows them.
-- `askama-analyzer fmt [--check] [PATH...]` formats templates, the files given or every file under a `templates` directory, changing only the spacing inside tags: text outside them is what askama renders, so it is never touched.
+- `askama-analyzer fmt [--check] [--max-width N] [--no-indent-html] [PATH...]` formats templates, the files given or every file under a `templates` directory. Expressions inside tags are laid out as rustfmt lays out Rust, broken over lines when they pass `--max-width` (100). A line still too long breaks inside the tags that run past the width: an askama tag too long for a line of its own puts its contents on lines of their own, and in HTML templates a start tag that begins its line puts one attribute per line. A dense line with nothing long enough to break stays long. Whitespace inside a tag is never rendered, and nothing between tags or in text changes. Other templates' text is never touched, since askama renders it byte for byte.
+
+### HTML indentation
+
+HTML templates (`.html`, `.htm`, also with askama's `.askama`, `.j2`, `.jinja`, `.jinja2` or `.rinja` suffix) are re-indented by the nesting of elements and block tags. One level is what the file's `.editorconfig` says (`indent_style`, `indent_size`, `tab_width`), or 2 spaces when it says nothing; `fmt` and the editor both read it, so a file the editor formatted passes `fmt --check`.
+
+Only the amount of whitespace starting each line changes, which HTML renders the same whatever its amount. `<pre>`, `<textarea>`, `<script>`, `<style>`, `raw` blocks, and the bodies of `filter` and block `let` tags are left as written, as are the blocks a parent template renders inside one of those elements (or every block, when the parent cannot be read). What a file cannot see is the one way the output can change: a macro or an included template rendered inside another file's `<pre>`, or an element styled `white-space: pre`. Where that matters, turn it off with `--no-indent-html` or `format.indentHtml: false`.
 
 ## How it is put together
 
