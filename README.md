@@ -6,9 +6,21 @@ Powers [zed-askama](https://github.com/radiosilence/zed-askama) a Zed extension.
 
 ## Why
 
+I've spent quite a while now playing with non-react stacks out of boredom and curiosity, the one that's stuck for me has been axum/askama/datastar, and I'm working on building up the ecosystem around these things. With a lot of templating alternatives to react, you miss out on the incredible type-safety TSX gives you, and those ergonomics are important to both manual and AI-assisted coding. The stack is pleasant to use, blindingly fast and low-resource-using, solid, and SSR by default.
+
 Askama compiles a template into Rust inside `#[derive(Template)]`. rust-analyzer analyses that expansion but cannot map it back to the template, so a broken template shows up as one error on the struct, and the template itself gets no completion or navigation. Existing editor support either highlights only, or approximates askama's code generation by hand and misses whatever the approximation does not cover.
 
 `askama-analyzer` runs askama's own code generator, keeps the template position of every token it generates, and asks rust-analyzer about the result. Answers come back in template positions, and they are the compiler's answers, because the code is the compiler's code.
+
+### Ecosystem
+
+Some projects I've made for the afformentioned stack:
+
+- [askama-analyzer](https://github.com/radisilence/askama-analyzer): Language server for askama templates.
+- [askama-datastar](https://github.com/radiosilence/askama-datastar): Helpers for using Askama with datastar nicely.
+- [askama-gettext](https://github.com/radiosilence/blit/tree/main/crates/askama_gettext): Helpers for doing i18 nicely using standardised gettext (po, pot, etc) files.
+- [zed-askama](https://github.com/radiosilence/zed-askama): Zed extension to support the LSP with all the bells and whistles.
+- [koan-kit-web](https://github.com/radiosilence/koan/tree/main/koan-kit-web): An example component library based on Askama and datastar.
 
 ## Installing
 
@@ -30,6 +42,7 @@ It needs `rust-analyzer`, from the client's initialization options or the `PATH`
   ```
 
   The plugin attaches to `.html`, `.htm`, `.txt` and `.md` files as well as `.askama`, since that is how templates are named; in a file no template struct reads, the server does nothing. It leaves `.rs` files to rust-analyzer.
+
 - **Anything else** that speaks LSP: run `askama-analyzer` on stdio for template files. rust-analyzer's path, arguments, environment and settings can be passed as `initializationOptions.rustAnalyzer` (`path`, `args`, `env`, `initializationOptions`, `settings`), and the formatter's settings as `initializationOptions.format`: `maxWidth` (100 by default) and `indentHtml` (`true` by default; `false` leaves HTML templates' indentation outside tags as written).
 
 ## On the command line
@@ -52,22 +65,22 @@ The repository is an action that downloads a release, checks it against the rele
 ```yaml
 - uses: radiosilence/askama-analyzer@main # !! for supply-chain security, pin this to a specific hash for a tag and update regularly
   with:
-    paths: .          # what `fmt` checks
-    check: false      # also run `check` over the Cargo workspace at `workspace`; needs a Rust toolchain
+    paths: . # what `fmt` checks
+    check: false # also run `check` over the Cargo workspace at `workspace`; needs a Rust toolchain
 ```
 
 `@main` runs the action as it stands; a release tag (`@v0.7.0`) pins the action but not the binary, which `version` picks: `latest` by default, so CI runs what editors download, or a release such as `0.7.0` to pin it too. It needs `bash`, `curl` and `tar` (`unzip` on Windows), which GitHub's runners have; it needs no token, since releases are public. `rust-analyzer` gives `check` a rust-analyzer binary for type errors in the generated code. The step fails when either command finds something; the workflow's `continue-on-error` makes it advisory. It needs a release of 0.7.0 or later, the first with `--annotate`.
 
 ## How it is put together
 
-| Path | What |
-|---|---|
-| `crates/askama-analyzer` | The language server, `check` and `fmt` |
-| `crates/askama-analyzer-codegen` | askama's generator run on one template item, with a map from every generated token to its template range |
-| `editors/claude-code` | The Claude Code plugin |
+| Path                                                                                    | What                                                                                                                                     |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `crates/askama-analyzer`                                                                | The language server, `check` and `fmt`                                                                                                   |
+| `crates/askama-analyzer-codegen`                                                        | askama's generator run on one template item, with a map from every generated token to its template range                                 |
+| `editors/claude-code`                                                                   | The Claude Code plugin                                                                                                                   |
 | [radiosilence/askama](https://github.com/radiosilence/askama/compare/v0.16.1...tooling) | askama with a small `tooling` feature for long-running use, described in [ARCHITECTURE.md](ARCHITECTURE.md), which the crates build from |
-| `vendor/askama-testing` | askama's own test suite at the pinned release, which the generator and the formatter are tested against |
-| `docs/releasing.md` | How a release goes and the secrets it needs |
+| `vendor/askama-testing`                                                                 | askama's own test suite at the pinned release, which the generator and the formatter are tested against                                  |
+| `docs/releasing.md`                                                                     | How a release goes and the secrets it needs                                                                                              |
 
 ## Licence
 
