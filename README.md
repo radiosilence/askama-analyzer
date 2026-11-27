@@ -16,7 +16,7 @@ Askama compiles a template into Rust inside `#[derive(Template)]`. rust-analyzer
 
 Some projects I've made for the afformentioned stack:
 
-- [askama-analyzer](https://github.com/radisilence/askama-analyzer): Language server for askama templates.
+- [askama-analyzer](https://github.com/radiosilence/askama-analyzer): Language server for askama templates.
 - [askama-datastar](https://github.com/radiosilence/askama-datastar): Helpers for using Askama with datastar nicely.
 - [askama-gettext](https://github.com/radiosilence/blit/tree/main/crates/askama_gettext): Helpers for doing i18 nicely using standardised gettext (po, pot, etc) files.
 - [zed-askama](https://github.com/radiosilence/zed-askama): Zed extension to support the LSP with all the bells and whistles.
