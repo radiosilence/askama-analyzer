@@ -13,7 +13,8 @@ use askama_analyzer::text::{Encoding, Lines};
 use askama_analyzer::workspace::Workspace;
 use lsp_types::{
     CompletionParams, CompletionResponse, GotoDefinitionParams, GotoDefinitionResponse,
-    HoverContents, HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams, Url,
+    HoverContents, HoverParams, Position, RenameParams, TextDocumentIdentifier,
+    TextDocumentPositionParams, Url, WorkspaceEdit,
 };
 use tokio::sync::oneshot;
 
@@ -52,14 +53,13 @@ async fn a_field_the_struct_does_not_have_is_an_error_on_its_name_in_the_templat
     let problems = workspace.problems();
     let broken = fixture().join("templates/broken.html");
     let text = std::fs::read_to_string(&broken).expect("broken.html exists");
-    // rust-analyzer reports an unknown field on the whole field access.
     let list = problems
         .get(&broken)
         .unwrap_or_else(|| panic!("broken.html has no problem; all problems: {problems:?}"));
     assert!(
         list.iter()
-            .any(|problem| text[problem.range.clone()] == *"product.nme"),
-        "no error covers `nme`: {list:?}"
+            .any(|problem| text[problem.range.clone()] == *"nme"),
+        "no error is on `nme` itself: {list:?}"
     );
     assert!(
         !problems.contains_key(&fixture().join("templates/shop.html")),
@@ -92,6 +92,7 @@ async fn hover_on_a_field_shows_its_documentation() {
     let hover = answer
         .await
         .expect("the lane answers")
+        .expect("the lane does not refuse")
         .expect("hover has an answer");
     let shown = match hover.contents {
         HoverContents::Markup(markup) => markup.value,
@@ -124,6 +125,7 @@ async fn hover_at(workspaces: &mut [Workspace], needle: &str, into: usize) -> Op
     answer
         .await
         .expect("the lane answers")
+        .expect("the lane does not refuse")
         .map(|hover| match hover.contents {
             HoverContents::Markup(markup) => markup.value,
             other => format!("{other:?}"),
@@ -175,7 +177,10 @@ async fn going_to_a_fields_definition_lands_on_the_field_in_rust() {
         ),
     )
     .await;
-    let Some(GotoDefinitionResponse::Array(locations)) = answer.await.expect("the lane answers")
+    let Some(GotoDefinitionResponse::Array(locations)) = answer
+        .await
+        .expect("the lane answers")
+        .expect("the lane does not refuse")
     else {
         panic!("no definition");
     };
@@ -217,7 +222,11 @@ async fn completing_after_a_dot_offers_the_fields_and_methods_of_the_loop_variab
         ),
     )
     .await;
-    let labels: Vec<String> = match answer.await.expect("the lane answers") {
+    let labels: Vec<String> = match answer
+        .await
+        .expect("the lane answers")
+        .expect("the lane does not refuse")
+    {
         Some(CompletionResponse::List(list)) => {
             list.items.into_iter().map(|item| item.label).collect()
         }
@@ -263,7 +272,11 @@ async fn completing_a_bare_name_offers_the_loop_variable_in_scope() {
         ),
     )
     .await;
-    let labels: Vec<String> = match answer.await.expect("the lane answers") {
+    let labels: Vec<String> = match answer
+        .await
+        .expect("the lane answers")
+        .expect("the lane does not refuse")
+    {
         Some(CompletionResponse::List(list)) => {
             list.items.into_iter().map(|item| item.label).collect()
         }
@@ -275,5 +288,125 @@ async fn completing_a_bare_name_offers_the_loop_variable_in_scope() {
     assert!(
         labels.iter().any(|label| label == "product"),
         "the loop variable `product` is not offered: {labels:?}"
+    );
+}
+
+/// The rename edit for the name just after `needle` in shop.html, plus `into` bytes.
+async fn rename_at(
+    workspaces: &mut [Workspace],
+    needle: &str,
+    into: usize,
+    new_name: &str,
+) -> Option<WorkspaceEdit> {
+    let (uri, position) = after(&fixture().join("templates/shop.html"), needle, into);
+    let (reply, answer) = oneshot::channel();
+    features::answer(
+        workspaces,
+        Query::Rename(
+            RenameParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position,
+                },
+                new_name: new_name.to_owned(),
+                work_done_progress_params: Default::default(),
+            },
+            reply,
+        ),
+    )
+    .await;
+    answer
+        .await
+        .expect("the lane answers")
+        .expect("the lane does not refuse")
+}
+
+#[tokio::test]
+async fn renaming_a_method_from_a_dependency_is_refused_with_a_reason() {
+    let Some(rust_analyzer) = rust_analyzer() else {
+        return;
+    };
+    let mut workspaces = vec![shop(rust_analyzer).await];
+    let (uri, position) = after(&fixture().join("templates/shop.html"), "title.", 1);
+    let (reply, answer) = oneshot::channel();
+    features::answer(
+        &mut workspaces,
+        Query::PrepareRename(
+            TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position,
+            },
+            reply,
+        ),
+    )
+    .await;
+    let refusal = answer
+        .await
+        .expect("the lane answers")
+        .expect_err("`String::len` is std's and cannot be renamed");
+    assert!(!refusal.is_empty(), "the refusal says why: {refusal:?}");
+}
+
+/// The files an edit changes, and the text each of its edits replaces.
+fn replaced(edit: &WorkspaceEdit) -> Vec<(PathBuf, String)> {
+    let mut found = Vec::new();
+    for (uri, edits) in edit.changes.iter().flatten() {
+        let path = uri.to_file_path().expect("edits are in files");
+        let text = std::fs::read_to_string(&path).expect("the edited file exists");
+        let lines = Lines::new(&text, Encoding::Utf8);
+        for edit in edits {
+            let start = lines
+                .offset(edit.range.start)
+                .expect("the edit starts in the file");
+            let end = lines
+                .offset(edit.range.end)
+                .expect("the edit ends in the file");
+            found.push((path.clone(), text[start..end].to_owned()));
+        }
+    }
+    found
+}
+
+#[tokio::test]
+async fn renaming_a_field_in_a_template_renames_it_in_rust_and_the_template() {
+    let Some(rust_analyzer) = rust_analyzer() else {
+        return;
+    };
+    let mut workspaces = vec![shop(rust_analyzer).await];
+    let edit = rename_at(&mut workspaces, "product.", 1, "title")
+        .await
+        .expect("the rename has an edit");
+    let replaced = replaced(&edit);
+    let lib = fixture().join("src/lib.rs");
+    let shop = fixture().join("templates/shop.html");
+    assert!(
+        replaced.contains(&(lib, "name".to_owned())),
+        "the field is not renamed in lib.rs: {replaced:?}"
+    );
+    assert!(
+        replaced.contains(&(shop, "name".to_owned())),
+        "the use is not renamed in shop.html: {replaced:?}"
+    );
+}
+
+#[tokio::test]
+async fn renaming_a_segment_of_a_called_path_renames_that_item() {
+    let Some(rust_analyzer) = rust_analyzer() else {
+        return;
+    };
+    let mut workspaces = vec![shop(rust_analyzer).await];
+    let edit = rename_at(&mut workspaces, "Button::", 1, "main")
+        .await
+        .expect("the rename has an edit");
+    let replaced = replaced(&edit);
+    let lib = fixture().join("src/lib.rs");
+    let shop = fixture().join("templates/shop.html");
+    assert!(
+        replaced.contains(&(lib, "primary".to_owned())),
+        "the function is not renamed in lib.rs: {replaced:?}"
+    );
+    assert!(
+        replaced.contains(&(shop, "primary".to_owned())),
+        "the call is not renamed in shop.html: {replaced:?}"
     );
 }

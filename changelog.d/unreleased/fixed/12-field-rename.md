@@ -1,0 +1,1 @@
+- **Renames reach templates, and a rename that cannot work says why.** Renaming a field from a template now renames its uses in templates as well as in Rust, and a name rust-analyzer will not rename, such as one from a dependency, is refused with its reason instead of opening a rename that does nothing. Errors on a field now sit on its name rather than the whole access.
