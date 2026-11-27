@@ -43,6 +43,19 @@ HTML templates (`.html`, `.htm`, also with askama's `.askama`, `.j2`, `.jinja`, 
 
 Only the amount of whitespace starting each line changes, which HTML renders the same whatever its amount. `<pre>`, `<textarea>`, `<script>`, `<style>`, `raw` blocks, and the bodies of `filter` and block `let` tags are left as written, as are the blocks a parent template renders inside one of those elements (or every block, when the parent cannot be read). What a file cannot see is the one way the output can change: a macro or an included template rendered inside another file's `<pre>`, or an element styled `white-space: pre`. Where that matters, turn it off with `--no-indent-html` or `format.indentHtml: false`.
 
+## In GitHub Actions
+
+The repository is an action that downloads a release, checks it against the release's `SHA256SUMS`, caches it, and runs `fmt --check --annotate` (and, when asked, `check --annotate`), so unformatted runs of lines and template errors appear on the pull request's diff:
+
+```yaml
+- uses: radiosilence/askama-analyzer@main
+  with:
+    paths: .          # what `fmt` checks
+    check: false      # also run `check` over the Cargo workspace at `workspace`; needs a Rust toolchain
+```
+
+`@main` runs the action as it stands; a release tag (`@v0.7.0`) pins the action but not the binary, which `version` picks: `latest` by default, so CI runs what editors download, or a release such as `0.7.0` to pin it too. It needs `bash`, `curl` and `tar` (`unzip` on Windows), which GitHub's runners have; it needs no token, since releases are public. `rust-analyzer` gives `check` a rust-analyzer binary for type errors in the generated code. The step fails when either command finds something; the workflow's `continue-on-error` makes it advisory. It needs a release of 0.7.0 or later, the first with `--annotate`.
+
 ## How it is put together
 
 | Path | What |

@@ -1,0 +1,148 @@
+name: askama-analyzer
+description: Check that askama templates are formatted and free of errors, annotating the pull request's diff.
+author: radiosilence heavy industries ltd
+branding:
+  icon: check-square
+  color: orange
+
+inputs:
+  version:
+    description: The askama-analyzer release to run, as `0.7.0` or `v0.7.0`, or `latest`.
+    default: latest
+  fmt:
+    description: Run `askama-analyzer fmt --check --annotate` over `paths`.
+    default: "true"
+  paths:
+    description: Templates, or directories holding `templates` directories, for `fmt`, separated by spaces or newlines.
+    default: .
+  check:
+    description: Run `askama-analyzer check --annotate` over the Cargo workspace at `workspace`. Needs a Rust toolchain, since it reads `cargo metadata`.
+    default: "false"
+  workspace:
+    description: The Cargo workspace `check` reads.
+    default: .
+  rust-analyzer:
+    description: A rust-analyzer binary for `check` to type-check the generated code with, as an editor does. Loading a workspace takes minutes, so it is off unless given.
+    default: ""
+outputs:
+  version:
+    description: The release that ran, as `vX.Y.Z`.
+    value: ${{ steps.release.outputs.tag }}
+  fmt:
+    description: "`passed` or `failed`, or empty when `fmt` did not run."
+    value: ${{ steps.run.outputs.fmt }}
+  check:
+    description: "`passed` or `failed`, or empty when `check` did not run."
+    value: ${{ steps.run.outputs.check }}
+
+runs:
+  using: composite
+  steps:
+    # Releases are public, so plain HTTPS reaches them: no token, and no `gh`
+    # on the runner.
+    - id: release
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) target=x86_64-unknown-linux-musl ext=tar.gz ;;
+          Linux-ARM64) target=aarch64-unknown-linux-musl ext=tar.gz ;;
+          macOS-X64) target=x86_64-apple-darwin ext=tar.gz ;;
+          macOS-ARM64) target=aarch64-apple-darwin ext=tar.gz ;;
+          Windows-X64) target=x86_64-pc-windows-msvc ext=zip ;;
+          Windows-ARM64) target=aarch64-pc-windows-msvc ext=zip ;;
+          *) echo "::error::askama-analyzer has no release for $RUNNER_OS on $RUNNER_ARCH"; exit 1 ;;
+        esac
+        if [ "$VERSION" = latest ]; then
+          # GitHub redirects the latest release to its tag's page.
+          url=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/radiosilence/askama-analyzer/releases/latest)
+          tag=${url##*/}
+        else
+          tag=v${VERSION#v}
+        fi
+        {
+          echo "tag=$tag"
+          echo "asset=askama-analyzer-$target.$ext"
+          echo "dir=$RUNNER_TOOL_CACHE/askama-analyzer/$tag/$target"
+        } >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.release.outputs.dir }}
+        key: askama-analyzer-${{ steps.release.outputs.tag }}-${{ steps.release.outputs.asset }}
+
+    # The archive is checked against its line of the release's SHA256SUMS
+    # before it is unpacked; an archive the sums do not list fails. A second
+    # run in the same job finds the binary unpacked, since the cache saves only
+    # when the job ends.
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TAG: ${{ steps.release.outputs.tag }}
+        ASSET: ${{ steps.release.outputs.asset }}
+        DIR: ${{ steps.release.outputs.dir }}
+      run: |
+        if [ -e "$DIR/askama-analyzer" ] || [ -e "$DIR/askama-analyzer.exe" ]; then
+          exit 0
+        fi
+        download=$(mktemp -d)
+        cd "$download"
+        base=https://github.com/radiosilence/askama-analyzer/releases/download/$TAG
+        curl -fsSL --retry 3 -O "$base/$ASSET" -O "$base/SHA256SUMS"
+        if ! grep " $ASSET\$" SHA256SUMS > sum; then
+          echo "::error::SHA256SUMS for $TAG does not list $ASSET"
+          exit 1
+        fi
+        if command -v sha256sum > /dev/null; then
+          sha256sum --check sum
+        else
+          shasum -a 256 --check sum
+        fi
+        mkdir -p "$DIR"
+        case "$ASSET" in
+          *.zip) unzip -oq "$ASSET" -d "$DIR" ;;
+          *) tar -xzf "$ASSET" -C "$DIR" ;;
+        esac
+
+    - shell: bash
+      env:
+        DIR: ${{ steps.release.outputs.dir }}
+      run: echo "$DIR" >> "$GITHUB_PATH"
+
+    # Both commands run whatever the other finds, so one run reports everything.
+    - id: run
+      shell: bash
+      env:
+        FMT: ${{ inputs.fmt }}
+        PATHS: ${{ inputs.paths }}
+        CHECK: ${{ inputs.check }}
+        WORKSPACE: ${{ inputs.workspace }}
+        RUST_ANALYZER: ${{ inputs.rust-analyzer }}
+      run: |
+        askama-analyzer --version
+        status=0
+        if [ "$FMT" = true ]; then
+          # Whitespace, newlines included, separates paths, so a block scalar works.
+          read -ra paths -d '' <<< "$PATHS" || true
+          if askama-analyzer fmt --check --annotate "${paths[@]}"; then
+            echo "fmt=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "fmt=failed" >> "$GITHUB_OUTPUT"
+            status=1
+          fi
+        fi
+        if [ "$CHECK" = true ]; then
+          args=(--annotate)
+          if [ -n "$RUST_ANALYZER" ]; then
+            args+=(--rust-analyzer "$RUST_ANALYZER")
+          fi
+          if askama-analyzer check "${args[@]}" "$WORKSPACE"; then
+            echo "check=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "check=failed" >> "$GITHUB_OUTPUT"
+            status=1
+          fi
+        fi
+        exit "$status"
