@@ -1275,6 +1275,11 @@ text
             html(source),
             "<div><p>{% if a %}x{% endif %}</p>\n  <span>y</span></div>\n\n\n<i>z</i>"
         );
+        // The first line's whitespace has no line break before it, so it would render.
+        assert_eq!(
+            html("  <p>ñ 🙂</p>\n    <p>ō</p>"),
+            "  <p>ñ 🙂</p>\n<p>ō</p>"
+        );
     }
 
     #[test]

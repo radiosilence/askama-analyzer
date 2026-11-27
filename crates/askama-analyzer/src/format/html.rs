@@ -3,11 +3,11 @@
 //! The rule that keeps it safe: only the amount of leading whitespace on an existing line
 //! changes. No line break is added or removed and nothing inside a line moves. In HTML a line
 //! break followed by any amount of whitespace renders as the same single space, so the page
-//! cannot change. The places where whitespace is kept as written are left alone line by line:
-//! `<pre>`, `<textarea>`, `<script>` and `<style>` contents, HTML comments, `raw` blocks,
-//! askama comments, and lines that continue a tag (an askama tag's are laid out with its
-//! expression; an HTML tag's move with the line the tag starts on, unless they start inside
-//! an attribute's value).
+//! cannot change. The first line, which no line break precedes, keeps its whitespace, and so do
+//! the places where whitespace is kept as written, line by line: `<pre>`, `<textarea>`,
+//! `<script>` and `<style>` contents, HTML comments, `raw` blocks, askama comments, and lines
+//! that continue a tag (an askama tag's are laid out with its expression; an HTML tag's move
+//! with the line the tag starts on, unless they start inside an attribute's value).
 
 use super::{Segment, TagKind, first_word};
 
@@ -22,8 +22,9 @@ const VERBATIM: &[&str] = &["pre", "textarea", "script", "style", "xmp", "listin
 /// Elements an author may leave unclosed, closed by the next one of the same name.
 const SELF_ENDING: &[&str] = &["li", "option", "tr", "td", "th", "dt", "dd", "p"];
 
+/// An askama tag with a body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Block {
+enum Tag {
     If,
     For,
     Match,
@@ -38,7 +39,7 @@ enum Block {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Entry {
     Element(String),
-    Block(Block),
+    Block(Tag),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,13 +113,13 @@ impl Indenter {
         self.stack.push(entry);
     }
 
-    fn find_block(&self, kinds: &[Block]) -> Option<usize> {
+    fn find_block(&self, kinds: &[Tag]) -> Option<usize> {
         self.stack
             .iter()
             .rposition(|entry| matches!(entry, Entry::Block(kind) if kinds.contains(kind)))
     }
 
-    fn close_block(&mut self, kind: Block) {
+    fn close_block(&mut self, kind: Tag) {
         if let Some(index) = self.find_block(&[kind]) {
             self.stack.truncate(index);
         }
@@ -141,19 +142,19 @@ impl Indenter {
     /// `else`, `elif` and `when`: the end of one branch and the start of the next, one level
     /// out from their bodies.
     fn branch(&mut self, word: &str) {
-        let kinds: &[Block] = if word == "when" {
-            &[Block::When, Block::Match]
+        let kinds: &[Tag] = if word == "when" {
+            &[Tag::When, Tag::Match]
         } else {
-            &[Block::If, Block::For, Block::When, Block::Match]
+            &[Tag::If, Tag::For, Tag::When, Tag::Match]
         };
         let Some(index) = self.find_block(kinds) else {
             self.content();
             return;
         };
         let reopen = match self.stack[index] {
-            Entry::Block(Block::Match) => {
+            Entry::Block(Tag::Match) => {
                 self.stack.truncate(index + 1);
-                Block::When
+                Tag::When
             }
             Entry::Block(kind) => {
                 self.stack.truncate(index);
@@ -168,26 +169,26 @@ impl Indenter {
     fn askama_block(&mut self, body: &str) {
         let word = first_word(body);
         let opens = match word {
-            "if" => Some(Block::If),
-            "for" => Some(Block::For),
-            "match" => Some(Block::Match),
-            "block" => Some(Block::Block),
-            "macro" => Some(Block::Macro),
-            "filter" => Some(Block::Filter),
-            "call" => Some(Block::Call),
-            "let" | "set" if !assigns(body) => Some(Block::Let),
+            "if" => Some(Tag::If),
+            "for" => Some(Tag::For),
+            "match" => Some(Tag::Match),
+            "block" => Some(Tag::Block),
+            "macro" => Some(Tag::Macro),
+            "filter" => Some(Tag::Filter),
+            "call" => Some(Tag::Call),
+            "let" | "set" if !assigns(body) => Some(Tag::Let),
             _ => None,
         };
         let closes = match word {
-            "endif" => Some(Block::If),
-            "endfor" => Some(Block::For),
-            "endmatch" => Some(Block::Match),
-            "endwhen" => Some(Block::When),
-            "endblock" => Some(Block::Block),
-            "endmacro" => Some(Block::Macro),
-            "endfilter" => Some(Block::Filter),
-            "endcall" => Some(Block::Call),
-            "endlet" | "endset" => Some(Block::Let),
+            "endif" => Some(Tag::If),
+            "endfor" => Some(Tag::For),
+            "endmatch" => Some(Tag::Match),
+            "endwhen" => Some(Tag::When),
+            "endblock" => Some(Tag::Block),
+            "endmacro" => Some(Tag::Macro),
+            "endfilter" => Some(Tag::Filter),
+            "endcall" => Some(Tag::Call),
+            "endlet" | "endset" => Some(Tag::Let),
             _ => None,
         };
         if let Some(kind) = opens {
@@ -217,7 +218,7 @@ impl Indenter {
                 Html::Text => {
                     if b == b' ' || b == b'\t' || b == b'\r' {
                         i += 1;
-                    } else if text[i..].starts_with("<!--") {
+                    } else if bytes[i..].starts_with(b"<!--") {
                         self.content();
                         self.html = Html::Comment;
                         i += 4;
@@ -284,7 +285,7 @@ impl Indenter {
                     }
                 }
                 Html::Comment => {
-                    if text[i..].starts_with("-->") {
+                    if bytes[i..].starts_with(b"-->") {
                         self.html = Html::Text;
                         i += 3;
                     } else {
@@ -369,7 +370,8 @@ pub(super) fn reindent(source: &str, segments: &[Segment], unit: &str) -> String
         lines: Vec::new(),
         head: true,
     };
-    indenter.new_line(false);
+    // No line break precedes the first line's whitespace, so it would render.
+    indenter.new_line(true);
     for segment in segments {
         match segment {
             Segment::Verbatim(range) => indenter.text(&source[range.clone()]),
