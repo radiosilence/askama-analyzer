@@ -89,11 +89,11 @@ impl<'s> Printer<'s> {
         }
     }
 
-    fn newline(&self, level: usize) -> String {
+    pub(super) fn newline(&self, level: usize) -> String {
         format!("\n{}{}", self.base, " ".repeat(INDENT * level))
     }
 
-    fn column(&self, level: usize) -> usize {
+    pub(super) fn column(&self, level: usize) -> usize {
         self.base_width + INDENT * level
     }
 
