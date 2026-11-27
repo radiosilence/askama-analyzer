@@ -670,15 +670,17 @@ fn format_once(
 ) -> String {
     let segments = segments(source, syntax);
     // Start tags in a body that is captured, or rendered where whitespace is kept, stay whole.
-    let start_tags = match options.html_indent {
+    let (start_tags, in_values) = match options.html_indent {
         Some(_) => {
             let kept = html::kept_bodies(source, &segments, blocks);
-            html::start_tags(source, &segments)
+            let (tags, in_values) = html::start_tags(source, &segments);
+            let tags = tags
                 .into_iter()
                 .filter(|tag| !kept.iter().any(|body| body.contains(&tag.range.start)))
-                .collect()
+                .collect();
+            (tags, in_values)
         }
-        None => Vec::new(),
+        None => (Vec::new(), HashSet::new()),
     };
     let mut breaks = Breaks::default();
     let mut cache = HashMap::new();
@@ -692,7 +694,7 @@ fn format_once(
             &breaks,
             &mut cache,
         );
-        match next_break(&rendered, &segments, options, &breaks) {
+        match next_break(&rendered, source, &segments, &in_values, options, &breaks) {
             Some(Construct::Tag(index)) => breaks.tags.insert(index),
             Some(Construct::Html(index)) => breaks.html.insert(index),
             None => return rendered.text,
@@ -728,7 +730,9 @@ type Cache = HashMap<(usize, bool, String), Option<String>>;
 /// is not one: it was laid out already.
 fn next_break(
     rendered: &Rendered,
+    source: &str,
     segments: &[Segment],
+    in_values: &HashSet<usize>,
     options: &Options,
     breaks: &Breaks,
 ) -> Option<Construct> {
@@ -742,6 +746,7 @@ fn next_break(
     for line in text.split('\n') {
         let end = start + line.len();
         if columns(line) > options.max_width {
+            let indent = columns(&line[..line.len() - line.trim_start_matches([' ', '\t']).len()]);
             let mut best: Option<(usize, Construct)> = None;
             for (construct, range) in &rendered.constructs {
                 if range.start < start || range.end > end {
@@ -753,19 +758,27 @@ fn next_break(
                 if from >= options.max_width || to <= options.max_width {
                     continue;
                 }
+                let starts_line = before.trim_start_matches([' ', '\t']).is_empty();
                 let eligible = match *construct {
-                    Construct::Tag(index) => {
-                        !breaks.tags.contains(&index)
-                            && !before.trim_start_matches([' ', '\t']).is_empty()
-                            && matches!(
-                                segments[index],
-                                Segment::Tag {
-                                    kind: TagKind::Expression | TagKind::Block,
-                                    ..
-                                }
-                            )
-                    }
-                    Construct::Html(index) => !breaks.html.contains(&index),
+                    Construct::Tag(index) => match &segments[index] {
+                        Segment::Tag {
+                            kind: TagKind::Expression | TagKind::Block,
+                            range: tag,
+                            inner,
+                        } => {
+                            // Its contents on a line of their own, one level in, must not fit.
+                            let delimiters = columns(&source[tag.start..inner.start])
+                                + columns(&source[inner.end..tag.end])
+                                + 2;
+                            let contents = (to - from).saturating_sub(delimiters);
+                            !breaks.tags.contains(&index)
+                                && !starts_line
+                                && !in_values.contains(&index)
+                                && contents + indent + layout::INDENT > options.max_width
+                        }
+                        _ => false,
+                    },
+                    Construct::Html(index) => !breaks.html.contains(&index) && starts_line,
                 };
                 if eligible && best.is_none_or(|(width, _)| to - from > width) {
                     best = Some((to - from, *construct));
@@ -1620,11 +1633,32 @@ mod tests {
 
     #[test]
     fn a_broken_block_tag_keeps_its_markers_on_its_delimiters() {
-        let (a, b) = ("a".repeat(44), "b".repeat(44));
+        let (a, b) = ("a".repeat(46), "b".repeat(46));
         let source = format!("<p>{{%- if {a} && {b} -%}}x{{% endif %}}</p>");
         assert_eq!(
             formatted(&source),
-            format!("<p>{{%-\n    if {a} && {b}\n-%}}x{{% endif %}}</p>")
+            format!("<p>{{%-\n    if {a}\n        && {b}\n-%}}x{{% endif %}}</p>")
+        );
+    }
+
+    /// Breaking these would not let them fit any better, so a dense line stays long.
+    #[test]
+    fn short_tags_inline_start_tags_and_tags_in_attribute_values_stay_whole() {
+        let words = "word ".repeat(18);
+        let source = format!(
+            "<p>{words}{{{{ self.size(j.bytes_per_sec) }}}}/s {{% match j.requests %}}{{% when Some with (n) %}}{{{{ n }}}}{{% when None %}}{{% endmatch %}}</p>"
+        );
+        assert_eq!(html(&source), source);
+        let source = format!(
+            "<p>{words}<a class=\"text-ink\" href=\"/jobs/{{{{ j.id }}}}\">job</a> <span data-since=\"{{{{ j.since }}}}\">x</span></p>"
+        );
+        assert_eq!(html(&source), source);
+        let long = format!("kit::Button::quiet(\"{}\").class(\"a\")", "x".repeat(90));
+        let source = format!("<div>\n<a title=\"{{{{ {long} }}}}\">x</a>\n</div>");
+        let out = html(&source);
+        assert!(
+            out.contains(&format!("title=\"{{{{ {long} }}}}\"")),
+            "a tag in an attribute value broke: {out}"
         );
     }
 

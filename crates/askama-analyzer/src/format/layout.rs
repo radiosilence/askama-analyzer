@@ -15,7 +15,7 @@ use askama_parser::{
 };
 
 /// rustfmt's block indent.
-const INDENT: usize = 4;
+pub(super) const INDENT: usize = 4;
 
 /// The widest a chain's root can be and still have its first link joined to it, as rustfmt
 /// keeps `self.field` or `x.method(` together rather than putting `self` on a line alone.

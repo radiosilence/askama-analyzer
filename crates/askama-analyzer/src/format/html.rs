@@ -413,8 +413,9 @@ pub(super) struct StartTag {
 }
 
 /// Every HTML start tag in `source` that has attributes and sits on one line, outside the
-/// elements whose contents are not HTML and outside comments.
-pub(super) fn start_tags(source: &str, segments: &[Segment]) -> Vec<StartTag> {
+/// elements whose contents are not HTML and outside comments; and the askama tags, by segment,
+/// that sit inside a start tag's quoted attribute value.
+pub(super) fn start_tags(source: &str, segments: &[Segment]) -> (Vec<StartTag>, HashSet<usize>) {
     struct Open {
         start: usize,
         name: String,
@@ -428,11 +429,15 @@ pub(super) fn start_tags(source: &str, segments: &[Segment]) -> Vec<StartTag> {
     let mut open: Option<Open> = None;
     let mut verbatim: Option<String> = None;
     let mut comment = false;
-    for segment in segments {
+    let mut in_values = HashSet::new();
+    for (index, segment) in segments.iter().enumerate() {
         let range = match segment {
             Segment::Verbatim(range) => range.clone(),
             Segment::Raw(range) | Segment::Tag { range, .. } => {
                 if let Some(tag) = &mut open {
+                    if tag.quote.is_some() {
+                        in_values.insert(index);
+                    }
                     tag.last = None;
                     if source[range.clone()].contains('\n') || matches!(segment, Segment::Raw(_)) {
                         tag.valid = false;
@@ -555,7 +560,7 @@ pub(super) fn start_tags(source: &str, segments: &[Segment]) -> Vec<StartTag> {
             }
         }
     }
-    found
+    (found, in_values)
 }
 
 /// The blocks a template that extends this one, `source`, defines whose bodies this one
