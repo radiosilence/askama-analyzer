@@ -54,7 +54,7 @@ The repository is an action that downloads a release, checks it against the rele
     check: false      # also run `check` over the Cargo workspace at `workspace`; needs a Rust toolchain
 ```
 
-`@main` runs the action as it stands; a release tag (`@v0.7.0`) pins it. `version` picks the binary, `latest` by default, so CI runs what editors download. `rust-analyzer` gives `check` a rust-analyzer binary for type errors in the generated code. The step fails when either command finds something; the workflow's `continue-on-error` makes it advisory. It needs a release of 0.7.0 or later, the first with `--annotate`.
+`@main` runs the action as it stands; a release tag (`@v0.7.0`) pins the action but not the binary, which `version` picks: `latest` by default, so CI runs what editors download, or a release such as `0.7.0` to pin it too. It needs `bash`, `curl` and `tar` (`unzip` on Windows), which GitHub's runners have; it needs no token, since releases are public. `rust-analyzer` gives `check` a rust-analyzer binary for type errors in the generated code. The step fails when either command finds something; the workflow's `continue-on-error` makes it advisory. It needs a release of 0.7.0 or later, the first with `--annotate`.
 
 ## How it is put together
 

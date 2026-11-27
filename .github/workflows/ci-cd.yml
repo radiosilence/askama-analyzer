@@ -392,15 +392,14 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-  # The one status the ruleset requires. Skipped jobs are domains the change
-  # does not touch and pass; anything failed or cancelled fails it.
   # The GitHub Action at the root, run as a workflow uses it, against the
-  # latest release on each runner it supports: it passes a formatted template
-  # and fails an unformatted one.
+  # latest release on each runner it supports: fmt passes a formatted template
+  # and fails an unformatted one. Not on a release, whose binary is not out
+  # yet: testing the previous one would stop a release that fixes it.
   action:
     name: Action (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.action == 'true'
+    if: needs.changes.outputs.action == 'true' && needs.changes.outputs.release != 'true'
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -422,12 +421,16 @@ jobs:
         uses: ./
         with:
           paths: action-test/unformatted
-      - if: steps.unformatted.outcome != 'failure'
+      - if: steps.unformatted.outputs.fmt != 'failed'
         shell: bash
+        env:
+          FMT: ${{ steps.unformatted.outputs.fmt }}
         run: |
-          echo "::error::the action passed an unformatted template"
+          echo "::error::fmt on the unformatted template: '$FMT', not 'failed'"
           exit 1
 
+  # The one status the ruleset requires. Skipped jobs are domains the change
+  # does not touch and pass; anything failed or cancelled fails it.
   checks:
     name: Checks
     runs-on: ubuntu-24.04
