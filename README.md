@@ -2,6 +2,8 @@
 
 A language server for [askama](https://askama.rs) templates: completion, hover, go to definition, references, renames, errors and formatting inside templates, from the rust-analyzer you already run.
 
+Powers [zed-askama](https://github.com/radiosilence/zed-askama) a Zed extension.
+
 ## Why
 
 Askama compiles a template into Rust inside `#[derive(Template)]`. rust-analyzer analyses that expansion but cannot map it back to the template, so a broken template shows up as one error on the struct, and the template itself gets no completion or navigation. Existing editor support either highlights only, or approximates askama's code generation by hand and misses whatever the approximation does not cover.
