@@ -933,10 +933,20 @@ fn lay_out(
 ) -> Option<String> {
     let laid = lay_out_as(kind, body, open, close, line, options, broken)?;
     let starts_line = line.trim_start_matches([' ', '\t']).is_empty();
-    if !broken && starts_line && laid.contains('\n') {
-        return lay_out_as(kind, body, open, close, line, options, true);
+    if broken || !starts_line {
+        return Some(laid);
     }
-    Some(laid)
+    // The printer broke the expression when its layout differs from the one-line form, which
+    // can itself span lines: string literals and Rust macro arguments are copied as written.
+    let unbounded = Options {
+        max_width: usize::MAX,
+        ..options.clone()
+    };
+    let flat = lay_out_as(kind, body, open, close, line, &unbounded, false);
+    if flat.as_ref() == Some(&laid) {
+        return Some(laid);
+    }
+    lay_out_as(kind, body, open, close, line, options, true).or(Some(laid))
 }
 
 fn lay_out_as(
@@ -1820,6 +1830,17 @@ mod tests {
             formatted(&format!("x\n  {{% let x = f({a}, {b}) %}}")),
             format!("x\n  {{%\n      let x = f(\n          {a},\n          {b},\n      )\n  %}}")
         );
+    }
+
+    /// Text copied as written may span lines; that is not the printer breaking the tag.
+    #[test]
+    fn a_tag_that_fits_keeps_its_shape_around_text_written_over_lines() {
+        for source in [
+            "  {{ format!(\"{}\",\n      x) }}",
+            "{{ \"line one\nline two\"|safe }}",
+        ] {
+            assert_eq!(formatted(source), source);
+        }
     }
 
     #[test]
