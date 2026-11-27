@@ -13,6 +13,8 @@ askama-analyzer-codegen.workspace = true
 askama_parser.workspace = true
 async-lsp = { version = "0.2.4", default-features = false, features = ["client-monitor", "omni-trait", "stdio", "tokio", "tracing"] }
 cargo_metadata = "0.23"
+# The formatter's HTML indentation, read from `.editorconfig` by both `fmt` and the editor.
+ec4rs = "1.2"
 clap = { version = "4", features = ["derive"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 line-index = "0.1.2"

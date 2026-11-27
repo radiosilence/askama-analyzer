@@ -8,7 +8,8 @@
 //! whitespace-control markers and Rust macro arguments (which askama keeps as text).
 //!
 //! HTML templates are also re-indented by nesting depth (see `html`), which only ever changes
-//! the amount of leading whitespace on a line: HTML renders any amount of it the same.
+//! the amount of leading whitespace on a line, which HTML renders the same whatever its amount,
+//! except where another file renders this one's text with its whitespace kept.
 //!
 //! The formatter checks its own work. An expression it lays out must parse back to the same
 //! `askama_parser` tree, or its tag keeps its tokens' order and line breaks. Indentation must
@@ -26,6 +27,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use askama_analyzer_codegen::Files;
 use askama_parser::{Ast, Syntax};
 
 /// How a template is formatted.
@@ -58,11 +60,57 @@ pub fn is_html(path: &Path) -> bool {
         .and_then(|name| name.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let name = [".j2", ".jinja", ".jinja2", ".rinja"]
+    let name = [".askama", ".j2", ".jinja", ".jinja2", ".rinja"]
         .iter()
         .find_map(|suffix| name.strip_suffix(suffix))
         .unwrap_or(&name);
     name.ends_with(".html") || name.ends_with(".htm")
+}
+
+/// How the template at `path` is formatted, by the `.editorconfig` that applies to it: one
+/// level of HTML indentation is `indent_style` and `indent_size` (2 spaces when unset), and
+/// `tab_width` (4 when unset) measures tabs. The editor and `fmt` both read it, so they agree.
+/// `indent_html: false` leaves indentation outside tags as written.
+pub fn options_for(path: &Path, max_width: usize, indent_html: bool) -> Options {
+    use ec4rs::property::{IndentSize, IndentStyle, TabWidth};
+    let mut properties = ec4rs::properties_of(path).unwrap_or_else(|_| ec4rs::Properties::new());
+    properties.use_fallbacks();
+    let tab_width = match properties.get::<TabWidth>() {
+        Ok(TabWidth::Value(width)) if width > 0 => width,
+        _ => 4,
+    };
+    let unit = match (
+        properties.get::<IndentStyle>(),
+        properties.get::<IndentSize>(),
+    ) {
+        (Ok(IndentStyle::Tabs), _) => "\t".to_owned(),
+        (_, Ok(IndentSize::Value(size))) => " ".repeat(size),
+        (_, Ok(IndentSize::UseTabWidth)) => " ".repeat(tab_width),
+        _ => "  ".to_owned(),
+    };
+    Options {
+        max_width,
+        html_indent: (indent_html && is_html(path)).then_some(unit),
+        tab_width,
+    }
+}
+
+/// Whether a `let` or `set` tag assigns a value, rather than opening a block that does: an `=`
+/// outside any group. `Vec<u8>= v` reads as `>=`, which cannot come before the assignment.
+fn assigns(body: &str) -> bool {
+    let Some(tokens) = tokenize(body) else {
+        return true;
+    };
+    let mut depth = 0usize;
+    for token in tokens {
+        match token.text {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => depth = depth.saturating_sub(1),
+            "=" | ">=" | ">>=" if depth == 0 && token.kind == Kind::Punct => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Why a template was not formatted.
@@ -94,10 +142,102 @@ impl fmt::Display for FormatError {
 
 impl std::error::Error for FormatError {}
 
-/// Formats `source`, a template in `syntax`, returning the formatted text.
+/// Formats `source`, a template in `syntax`, returning the formatted text. The templates it
+/// extends are not read, so in an HTML template that extends another, block bodies keep their
+/// indentation; `format_in` reads them.
 pub fn format(source: &str, syntax: &Syntax<'_>, options: &Options) -> Result<String, FormatError> {
+    struct Nothing;
+    impl Files for Nothing {
+        fn read(&self, _: &Path) -> std::io::Result<String> {
+            Err(std::io::ErrorKind::NotFound.into())
+        }
+        fn exists(&self, _: &Path) -> bool {
+            false
+        }
+    }
+    format_in(source, Path::new(""), &Nothing, syntax, options)
+}
+
+/// Formats `source`, the template at `path`, reading the templates it extends through `files`
+/// to learn which of its blocks they render where whitespace is kept (inside `<pre>`,
+/// `<script>` and the like); those blocks' bodies keep their indentation, as do all of them
+/// when a template it extends cannot be read.
+pub fn format_in(
+    source: &str,
+    path: &Path,
+    files: &dyn Files,
+    syntax: &Syntax<'_>,
+    options: &Options,
+) -> Result<String, FormatError> {
+    let blocks = match options.html_indent {
+        Some(_) => kept_blocks(source, path, files, syntax, 0),
+        None => html::Blocks::All,
+    };
+    format_with(source, syntax, options, &blocks)
+}
+
+/// The blocks of the template at `path` that the templates it extends render where whitespace
+/// is kept.
+fn kept_blocks(
+    source: &str,
+    path: &Path,
+    files: &dyn Files,
+    syntax: &Syntax<'_>,
+    depth: usize,
+) -> html::Blocks {
+    let Some(parent) = extends(source, &segments(source, syntax)) else {
+        return html::Blocks::Named(HashSet::new());
+    };
+    let found = (depth < 16)
+        .then(|| resolve(&parent, path, files))
+        .flatten()
+        .and_then(|parent| Some((files.read(&parent).ok()?, parent)));
+    let Some((text, parent)) = found else {
+        return html::Blocks::All;
+    };
+    let inherited = kept_blocks(&text, &parent, files, syntax, depth + 1);
+    html::kept_blocks(&text, &segments(&text, syntax), &inherited)
+}
+
+/// The template an `extends` tag names, when it names one with a string.
+fn extends(source: &str, segments: &[Segment]) -> Option<String> {
+    segments.iter().find_map(|segment| match segment {
+        Segment::Tag {
+            kind: TagKind::Block,
+            inner,
+            ..
+        } => {
+            let body = source[inner.clone()].trim();
+            let name = body.strip_prefix("extends")?.trim();
+            Some(name.strip_prefix('"')?.strip_suffix('"')?.to_owned())
+        }
+        _ => None,
+    })
+}
+
+/// Where the template `name` is, from the template at `from`: beside it, or in the directory
+/// of one of its ancestors up to the crate's root.
+fn resolve(name: &str, from: &Path, files: &dyn Files) -> Option<PathBuf> {
+    for directory in from.ancestors().skip(1) {
+        let candidate = directory.join(name);
+        if files.exists(&candidate) {
+            return Some(candidate);
+        }
+        if files.exists(&directory.join("Cargo.toml")) {
+            break;
+        }
+    }
+    None
+}
+
+fn format_with(
+    source: &str,
+    syntax: &Syntax<'_>,
+    options: &Options,
+    blocks: &html::Blocks,
+) -> Result<String, FormatError> {
     let original = tree(source, syntax).map_err(FormatError::Parse)?;
-    let indented = indent(source, syntax, options);
+    let indented = indent(source, syntax, options, blocks);
     let base = if indented == source {
         original
     } else {
@@ -108,7 +248,12 @@ pub fn format(source: &str, syntax: &Syntax<'_>, options: &Options) -> Result<St
         if blank_strings_after(&base, "Lit(Lit { ", 3)
             != blank_strings_after(&original, "Lit(Lit { ", 3)
         {
-            return Err(unsafe_at(source, 0..source.len().min(40)));
+            let line = source
+                .split('\n')
+                .zip(indented.split('\n'))
+                .position(|(a, b)| a != b)
+                .unwrap_or_default();
+            return Err(unsafe_at_line(source, line));
         }
         base
     };
@@ -117,7 +262,11 @@ pub fn format(source: &str, syntax: &Syntax<'_>, options: &Options) -> Result<St
     // the one before did not; a few passes settle it.
     let mut second = String::new();
     for _ in 0..4 {
-        second = format_once(&indent(&formatted, syntax, options), syntax, options);
+        second = format_once(
+            &indent(&formatted, syntax, options, blocks),
+            syntax,
+            options,
+        );
         if second == formatted {
             break;
         }
@@ -147,16 +296,21 @@ pub fn format(source: &str, syntax: &Syntax<'_>, options: &Options) -> Result<St
             &mut Cache::new(),
         );
         if tree(&alone.text, syntax).as_ref() != Ok(&base) {
-            return Err(unsafe_at(&indented, segment.range()));
+            return Err(unsafe_at(source, &indented, segment.range().start));
         }
     }
-    // Then the first line a second pass changes.
-    let line = second
+    // Then the first line a second pass changes, found in the user's text by its words.
+    let changed = second
         .split('\n')
         .zip(formatted.split('\n'))
-        .position(|(a, b)| a != b)
+        .find(|(a, b)| a != b)
+        .map(|(_, line)| line.trim())
         .unwrap_or_default();
-    Err(unsafe_at_line(&formatted, line))
+    let line = source
+        .split('\n')
+        .position(|line| !changed.is_empty() && line.trim() == changed)
+        .unwrap_or_default();
+    Err(unsafe_at_line(source, line))
 }
 
 /// The template's text with each tag replaced by a mark, and the whitespace inside HTML start
@@ -215,9 +369,9 @@ fn skeleton(source: &str, syntax: &Syntax<'_>) -> String {
 }
 
 /// `source` re-indented, when `options` asks for HTML indentation.
-fn indent(source: &str, syntax: &Syntax<'_>, options: &Options) -> String {
+fn indent(source: &str, syntax: &Syntax<'_>, options: &Options, blocks: &html::Blocks) -> String {
     match &options.html_indent {
-        Some(unit) => html::reindent(source, &segments(source, syntax), unit),
+        Some(unit) => html::reindent(source, &segments(source, syntax), unit, blocks),
         None => source.to_owned(),
     }
 }
@@ -243,12 +397,29 @@ fn unsafe_at_line(source: &str, line: usize) -> FormatError {
     }
 }
 
-fn unsafe_at(source: &str, range: std::ops::Range<usize>) -> FormatError {
-    let before = &source[..range.start];
-    let line = before.matches('\n').count() + 1;
-    let column = before.len() - before.rfind('\n').map_or(0, |newline| newline + 1) + 1;
-    let tag: String = source[range].chars().take(80).collect();
-    FormatError::Unsafe { line, column, tag }
+/// The tag at byte `at` of `indented`, `source` re-indented, placed in `source`: indentation
+/// keeps every line, and moves a line's text only by the change in its leading whitespace.
+fn unsafe_at(source: &str, indented: &str, at: usize) -> FormatError {
+    let at = (0..=at.min(indented.len()))
+        .rev()
+        .find(|&at| indented.is_char_boundary(at))
+        .unwrap_or_default();
+    let before = &indented[..at];
+    let line = before.matches('\n').count();
+    let in_line = at - before.rfind('\n').map_or(0, |newline| newline + 1);
+    let leading = |text: &str| text.len() - text.trim_start_matches([' ', '\t']).len();
+    let new = indented.split('\n').nth(line).unwrap_or_default();
+    let old = source.split('\n').nth(line).unwrap_or_default();
+    let offset = match in_line.checked_sub(leading(new)) {
+        Some(past) => past + leading(old),
+        None => in_line.min(leading(old)),
+    };
+    let column = old.get(..offset).map_or(1, |text| text.chars().count() + 1);
+    FormatError::Unsafe {
+        line: line + 1,
+        column,
+        tag: indented[at..].chars().take(80).collect(),
+    }
 }
 
 /// The template's tree without spans, which `Debug` leaves out, and without comments' text,
@@ -392,7 +563,7 @@ fn tag_end(source: &str, start: usize, close: &str) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut i = start;
     while i < bytes.len() {
-        if source[i..].starts_with(close) {
+        if bytes[i..].starts_with(close.as_bytes()) {
             return Some(i + close.len());
         }
         match bytes[i] {
@@ -1169,13 +1340,14 @@ fn format_tokens(body: &str, keep_breaks: bool) -> Option<String> {
 /// `askama-analyzer fmt`: formats the templates at `paths` in place or, with `check`, lists
 /// those that are not formatted. A directory means every file under a `templates` directory
 /// in it. Templates use askama's default delimiters. Lines are kept to `max_width`, and HTML
-/// templates are indented by `indent` per level.
+/// templates are indented as their `.editorconfig` says, unless `indent_html` is false.
 pub fn run(
     check: bool,
     paths: &[PathBuf],
     max_width: usize,
-    indent: &str,
+    indent_html: bool,
 ) -> anyhow::Result<ExitCode> {
+    let disk = crate::vfs::Vfs::default().snapshot();
     let mut files = Vec::new();
     for path in paths {
         if path.is_dir() {
@@ -1196,12 +1368,9 @@ pub fn run(
                 continue;
             }
         };
-        let options = Options {
-            max_width,
-            html_indent: is_html(file).then(|| indent.to_owned()),
-            ..Options::default()
-        };
-        match format(&source, &syntax, &options) {
+        let path = std::path::absolute(file).unwrap_or_else(|_| file.clone());
+        let options = options_for(&path, max_width, indent_html);
+        match format_in(&source, &path, &disk, &syntax, &options) {
             Ok(formatted) if formatted == source => {}
             Ok(_) if check => {
                 println!("{}", file.display());
@@ -1647,6 +1816,122 @@ text
         assert!(!is_html(Path::new("a.txt")));
         assert!(!is_html(Path::new("a.md")));
         assert!(!is_html(Path::new("a.xml")));
+        assert!(is_html(Path::new("a.html.askama")));
+    }
+
+    struct Memory(HashMap<PathBuf, String>);
+
+    impl Files for Memory {
+        fn read(&self, path: &Path) -> std::io::Result<String> {
+            self.0
+                .get(path)
+                .cloned()
+                .ok_or_else(|| std::io::ErrorKind::NotFound.into())
+        }
+    }
+
+    #[test]
+    fn a_block_its_parent_renders_inside_a_script_keeps_its_indentation() {
+        let base = "<html>\n<script>\n{% block js %}{% endblock %}\n</script>\n<body>\n{% block body %}{% endblock %}\n</body>\n</html>\n";
+        let child = "{% extends \"base.html\" %}\n{% block js %}\nconst a = `\n  x\n`;\n{% endblock %}\n{% block body %}\n<p>\nhi\n</p>\n{% endblock %}\n";
+        let files = Memory(HashMap::from([(
+            PathBuf::from("/crate/templates/base.html"),
+            base.to_owned(),
+        )]));
+        let options = Options {
+            html_indent: Some("  ".to_owned()),
+            ..Options::default()
+        };
+        let path = Path::new("/crate/templates/page.html");
+        let out = format_in(child, path, &files, &Syntax::default(), &options)
+            .unwrap_or_else(|error| panic!("the child should format: {error}"));
+        assert_eq!(
+            out,
+            "{% extends \"base.html\" %}\n{% block js %}\nconst a = `\n  x\n`;\n{% endblock %}\n{% block body %}\n  <p>\n    hi\n  </p>\n{% endblock %}\n"
+        );
+        // A parent that cannot be read could put any block anywhere.
+        assert_eq!(
+            format_in(
+                child,
+                path,
+                &Memory(HashMap::new()),
+                &Syntax::default(),
+                &options
+            ),
+            Ok(child.to_owned())
+        );
+    }
+
+    #[test]
+    fn filter_and_let_bodies_are_captured_so_keep_their_indentation() {
+        let source = "<div>\n{% filter upper %}\n  a\n    b\n{% endfilter %}\n{% let x %}\n  c\n{% endlet %}\n{% let y: Vec<u8> = v %}\n<p>\n</div>";
+        assert_eq!(
+            html(source),
+            "<div>\n  {% filter upper %}\n  a\n    b\n{% endfilter %}\n  {% let x %}\n  c\n{% endlet %}\n  {% let y: Vec<u8> = v %}\n  <p>\n</div>"
+        );
+        // `>=` is the only way to read an `=` straight after a type's `>`.
+        assert!(assigns("let y: Vec<u8>= v"));
+        assert!(assigns("let y = a >= b"));
+        assert!(!assigns("let y"));
+        assert!(!assigns("set y: Vec<u8>"));
+    }
+
+    #[test]
+    fn a_refusal_points_into_the_users_text_without_slicing_a_character() {
+        let source = "ñ🙂ō\n  é {{ x }}";
+        let indented = "ñ🙂ō\né {{ x }}";
+        let error = unsafe_at(source, indented, indented.find("{{").unwrap_or_default());
+        assert_eq!(
+            error,
+            FormatError::Unsafe {
+                line: 2,
+                column: 5,
+                tag: "{{ x }}".to_owned()
+            }
+        );
+        assert!(matches!(
+            unsafe_at(source, indented, 1),
+            FormatError::Unsafe { line: 1, .. }
+        ));
+        assert!(matches!(
+            unsafe_at_line(source, 0),
+            FormatError::Unsafe { line: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn indentation_comes_from_editorconfig_for_fmt_and_the_editor_alike() {
+        let directory = std::env::temp_dir().join(format!(
+            "askama-analyzer-editorconfig-{}",
+            std::process::id()
+        ));
+        let templates = directory.join("templates");
+        fs::create_dir_all(&templates).expect("the directory is made");
+        fs::write(
+            directory.join(".editorconfig"),
+            "root = true\n\n[*]\nindent_style = space\nindent_size = 2\n\n[*.html]\nindent_size = 4\n",
+        )
+        .expect("the config is written");
+        let page = templates.join("page.html");
+        fs::write(&page, "<div>\n<p>x</p>\n</div>\n").expect("the template is written");
+
+        // The editor's path.
+        let options = options_for(&page, 100, true);
+        assert_eq!(options.html_indent.as_deref(), Some("    "));
+        assert_eq!(
+            options_for(&templates.join("a.txt"), 100, true).html_indent,
+            None
+        );
+        assert_eq!(options_for(&page, 100, false).html_indent, None);
+        // And `fmt`'s.
+        let code =
+            run(false, std::slice::from_ref(&directory), 100, true).expect("the templates format");
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert_eq!(
+            fs::read_to_string(&page).expect("the template is read"),
+            "<div>\n    <p>x</p>\n</div>\n"
+        );
+        fs::remove_dir_all(&directory).expect("the directory is removed");
     }
 
     #[test]

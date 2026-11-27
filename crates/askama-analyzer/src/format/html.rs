@@ -2,17 +2,23 @@
 //!
 //! The rule that keeps it safe: only the amount of leading whitespace on an existing line
 //! changes. No line break is added or removed and nothing inside a line moves. In HTML a line
-//! break followed by any amount of whitespace renders as the same single space, so the page
-//! cannot change. The first line, which no line break precedes, keeps its whitespace, and so do
-//! the places where whitespace is kept as written, line by line: `<pre>`, `<textarea>`,
-//! `<script>` and `<style>` contents, HTML comments, `raw` blocks, and lines that continue an
-//! askama tag, which are laid out with its expression. Lines that continue an askama comment,
+//! break followed by any amount of whitespace renders as the same single space. The first line,
+//! which no line break precedes, keeps its whitespace, and so do the places where whitespace is
+//! kept as written, line by line: `<pre>`, `<textarea>`, `<script>` and `<style>` contents,
+//! HTML comments, `raw` blocks, the bodies of `filter` and block `let` tags (which capture
+//! rather than render), the bodies of blocks the templates this one extends render in one of
+//! those places (all of them, when those templates cannot be read), and lines that continue an
+//! askama tag, which are laid out with its expression.
+//!
+//! What a file cannot see is the one way the output can change: a macro or an included
+//! template rendered inside another file's `<pre>`, or an element styled `white-space: pre`. Lines that continue an askama comment,
 //! or an HTML tag (unless they start inside an attribute's value), move with the line the
 //! comment or tag starts on.
 //!
 //! `start_tags` finds the HTML start tags a long line may break between attributes, which is
 //! whitespace HTML never renders either.
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use super::{Segment, TagKind, first_word};
@@ -75,18 +81,46 @@ enum Html {
     Verbatim(String),
 }
 
-struct Indenter {
+/// The `{% block %}` bodies of a template whose whitespace may be rendered as written, where
+/// the template that renders them puts them: inside `<pre>`, `<textarea>`, `<script>` or
+/// `<style>`, or in a `filter` or block `let`. `All` when that template could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Blocks {
+    All,
+    Named(HashSet<String>),
+}
+
+impl Blocks {
+    fn contains(&self, name: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Named(names) => names.contains(name),
+        }
+    }
+}
+
+struct Indenter<'b> {
     stack: Vec<Entry>,
     html: Html,
     lines: Vec<Line>,
     /// Whether everything on the current line so far is whitespace or closes something, so a
     /// closer there takes the line out a level.
     head: bool,
+    /// The blocks whose bodies are kept as written.
+    kept_blocks: &'b Blocks,
+    /// The depth of the stack at the block, `filter` or `let` whose body is being kept.
+    kept_from: Option<usize>,
+    /// The blocks opened where their bodies are kept, for templates that extend this one.
+    kept_names: HashSet<String>,
 }
 
-impl Indenter {
+impl Indenter<'_> {
+    fn keeping(&self) -> bool {
+        self.kept_from.is_some_and(|depth| self.stack.len() > depth)
+    }
+
     fn new_line(&mut self, inside_tag: bool) {
-        let line = if inside_tag {
+        let line = if inside_tag || self.keeping() {
             Line::Keep
         } else {
             match &self.html {
@@ -182,9 +216,31 @@ impl Indenter {
             "macro" => Some(Tag::Macro),
             "filter" => Some(Tag::Filter),
             "call" => Some(Tag::Call),
-            "let" | "set" if !assigns(body) => Some(Tag::Let),
+            "let" | "set" if !super::assigns(body) => Some(Tag::Let),
             _ => None,
         };
+        // A `filter` or block `let` captures its body rather than rendering it, and a block
+        // may be rendered elsewhere where whitespace matters, so their bodies are kept.
+        let keeps = match opens {
+            Some(Tag::Filter | Tag::Let) => true,
+            Some(Tag::Block) => {
+                let name = first_word(body.trim_start()[word.len()..].trim_start());
+                let kept = self.keeping()
+                    || matches!(
+                        self.html,
+                        Html::Verbatim(_) | Html::Comment | Html::Tag { quote: Some(_), .. }
+                    )
+                    || self.kept_blocks.contains(name);
+                if kept {
+                    self.kept_names.insert(name.to_owned());
+                }
+                kept
+            }
+            _ => false,
+        };
+        if !self.keeping() {
+            self.kept_from = keeps.then_some(self.stack.len());
+        }
         let closes = match word {
             "endif" => Some(Tag::If),
             "endfor" => Some(Tag::For),
@@ -208,8 +264,7 @@ impl Indenter {
         }
     }
 
-    /// Reads HTML in `text`, which starts at `offset` in the template, opening a line after
-    /// each line break.
+    /// Reads the HTML in `text`, opening a line after each line break.
     fn text(&mut self, text: &str) {
         let bytes = text.as_bytes();
         let mut i = 0;
@@ -331,33 +386,6 @@ impl Indenter {
         }
         self.stack.push(Entry::Element(name));
     }
-}
-
-/// Whether a `let` or `set` tag assigns a value, rather than opening a block that does.
-fn assigns(body: &str) -> bool {
-    let mut depth = 0usize;
-    let bytes = body.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-            b'"' => {
-                i = super::skip_string(bytes, i);
-                continue;
-            }
-            b'=' if depth == 0
-                && bytes.get(i + 1) != Some(&b'=')
-                && i.checked_sub(1)
-                    .is_none_or(|p| !matches!(bytes[p], b'=' | b'!' | b'<' | b'>')) =>
-            {
-                return true;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    false
 }
 
 /// The lower-cased element name at the start of `text`.
@@ -528,13 +556,29 @@ pub(super) fn start_tags(source: &str, segments: &[Segment]) -> Vec<StartTag> {
     found
 }
 
-/// `source` with each line's leading whitespace set by its nesting depth, `unit` per level.
-pub(super) fn reindent(source: &str, segments: &[Segment], unit: &str) -> String {
+/// The blocks a template that extends this one, `source`, defines whose bodies this one
+/// renders where whitespace is kept: `inherited` (this one's own, from the template it
+/// extends) and those it opens in such a place.
+pub(super) fn kept_blocks(source: &str, segments: &[Segment], inherited: &Blocks) -> Blocks {
+    match inherited {
+        Blocks::All => Blocks::All,
+        Blocks::Named(names) => {
+            let mut kept = scan(source, segments, inherited).kept_names;
+            kept.extend(names.iter().cloned());
+            Blocks::Named(kept)
+        }
+    }
+}
+
+fn scan<'b>(source: &str, segments: &[Segment], kept_blocks: &'b Blocks) -> Indenter<'b> {
     let mut indenter = Indenter {
         stack: Vec::new(),
         html: Html::Text,
         lines: Vec::new(),
         head: true,
+        kept_blocks,
+        kept_from: None,
+        kept_names: HashSet::new(),
     };
     // No line break precedes the first line's whitespace, so it would render.
     indenter.new_line(true);
@@ -555,7 +599,7 @@ pub(super) fn reindent(source: &str, segments: &[Segment], unit: &str) -> String
                     indenter.content();
                 }
                 for _ in source[range.clone()].matches('\n') {
-                    if *kind == TagKind::Comment {
+                    if *kind == TagKind::Comment && !indenter.keeping() {
                         // A comment's text is never rendered, so it moves with its first line.
                         indenter.lines.push(Line::Shift(start));
                         indenter.head = false;
@@ -566,7 +610,18 @@ pub(super) fn reindent(source: &str, segments: &[Segment], unit: &str) -> String
             }
         }
     }
+    indenter
+}
 
+/// `source` with each line's leading whitespace set by its nesting depth, `unit` per level,
+/// except in the bodies of `kept_blocks`.
+pub(super) fn reindent(
+    source: &str,
+    segments: &[Segment],
+    unit: &str,
+    kept_blocks: &Blocks,
+) -> String {
+    let indenter = scan(source, segments, kept_blocks);
     let mut out = String::with_capacity(source.len());
     let mut leading: Vec<(&str, String)> = Vec::new();
     for (index, line) in source.split('\n').enumerate() {

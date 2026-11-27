@@ -15,7 +15,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use askama_analyzer::format::{FormatError, Options, format, is_html};
+use askama_analyzer::format::{FormatError, Options, format, format_in, is_html};
+use askama_analyzer::vfs::Vfs;
 use askama_parser::Syntax;
 
 fn suite() -> PathBuf {
@@ -110,6 +111,7 @@ fn check_on_this_thread(sources: Vec<(String, String)>) -> (usize, usize, usize)
     let syntax = Syntax::default();
     let (mut formatted, mut changed, mut rejected) = (0, 0, 0);
     let mut failures = Vec::new();
+    let disk = Vfs::default().snapshot();
     for (name, source) in sources {
         let html = Options {
             html_indent: Some("  ".to_owned()),
@@ -118,7 +120,8 @@ fn check_on_this_thread(sources: Vec<(String, String)>) -> (usize, usize, usize)
         // Inline sources have no extension, so they are formatted both as HTML and not.
         let inline = name.contains(" #");
         let result = if is_html(Path::new(&name)) {
-            format(&source, &syntax, &html)
+            // A file's parents are read from beside it, as `fmt` reads them.
+            format_in(&source, Path::new(&name), &disk, &syntax, &html)
         } else if inline {
             format(&source, &syntax, &html)
                 .and_then(|_| format(&source, &syntax, &Options::default()))

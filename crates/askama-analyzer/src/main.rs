@@ -28,7 +28,8 @@ enum Command {
     },
     /// Format templates in place: the files given, or every file under a `templates`
     /// directory in the directories given. Expressions inside tags are laid out as rustfmt
-    /// lays out Rust, and HTML templates are re-indented by nesting depth.
+    /// lays out Rust, and HTML templates are re-indented by nesting depth, by the indentation
+    /// their `.editorconfig` sets (2 spaces when it sets none).
     Fmt {
         /// List the templates that are not formatted, and exit 1 if there are any, instead of
         /// writing them.
@@ -37,22 +38,12 @@ enum Command {
         /// The width lines are kept to.
         #[arg(long, default_value_t = 100)]
         max_width: usize,
-        /// One level of HTML indentation: a number of spaces, or `tab`.
-        #[arg(long, default_value = "2", value_parser = indent_unit)]
-        indent: String,
+        /// Leave the indentation outside tags as written in HTML templates.
+        #[arg(long)]
+        no_indent_html: bool,
         #[arg(default_value = ".")]
         paths: Vec<PathBuf>,
     },
-}
-
-fn indent_unit(value: &str) -> Result<String, String> {
-    if value == "tab" {
-        return Ok("\t".to_owned());
-    }
-    value
-        .parse::<usize>()
-        .map(|spaces| " ".repeat(spaces))
-        .map_err(|_| format!("`{value}` is neither a number of spaces nor `tab`"))
 }
 
 fn main() -> ExitCode {
@@ -86,9 +77,9 @@ fn main() -> ExitCode {
         Command::Fmt {
             check,
             max_width,
-            indent,
+            no_indent_html,
             paths,
-        } => askama_analyzer::format::run(check, &paths, max_width, &indent),
+        } => askama_analyzer::format::run(check, &paths, max_width, !no_indent_html),
     };
     match result {
         Ok(code) => code,
