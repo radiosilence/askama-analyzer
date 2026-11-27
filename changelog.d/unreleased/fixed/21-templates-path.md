@@ -1,1 +1,0 @@
-- **`fmt templates` formats the directory it names.** A path that is itself a `templates` directory was searched only for `templates` directories below it, so nothing was formatted or checked.

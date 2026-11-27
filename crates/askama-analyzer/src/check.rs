@@ -44,7 +44,14 @@ pub async fn run(
         for problem in list {
             let (line, column) = line_column(&text, problem.range.start);
             if annotate {
-                let shown = shown.to_string();
+                // GitHub matches annotations by their path from the working directory.
+                let shown = std::env::current_dir()
+                    .and_then(|cwd| cwd.canonicalize())
+                    .ok()
+                    .and_then(|cwd| path.strip_prefix(cwd).ok())
+                    .unwrap_or(path)
+                    .display()
+                    .to_string();
                 let annotation = annotation(&shown, line, None, Some(column), &problem.message);
                 println!("{annotation}");
             } else {

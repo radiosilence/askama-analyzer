@@ -3,7 +3,8 @@
 //! The printer works over `askama_parser`'s expression tree. Every construct either fits on
 //! the rest of its line or breaks in one consistent way, chosen as rustfmt chooses with its
 //! default settings: argument lists break one item per line with the closing delimiter on a
-//! line of its own (or, for a single call-like argument, let that argument break instead),
+//! line of its own (or, for a single call-like argument, let that argument break instead;
+//! an array of short simple items is packed onto lines instead),
 //! method chains break one call per line, and binary operators break before the operator.
 //! Continuation lines are indented in steps of four spaces from the indentation of the line
 //! the tag starts on, as rustfmt indents blocks from the statement's indentation.
@@ -409,7 +410,8 @@ impl<'s> Printer<'s> {
     }
 
     /// A delimited, comma-separated list: on one line; or its one call-like item broken in
-    /// place, as rustfmt overflows a last argument; or one item per line, each followed by a
+    /// place, as rustfmt overflows a last argument; or one item per line (short arrays are
+    /// packed by [`Printer::packed`] before they get here), each followed by a
     /// comma (askama accepts a trailing one in every list this prints), with the closing
     /// delimiter on a line of its own.
     #[allow(clippy::too_many_arguments)]
@@ -697,29 +699,29 @@ impl<'s> Printer<'s> {
     }
 }
 
-/// Whether rustfmt lets this expression, as a list's only item, break in place of the list.
 /// rustfmt's `short_array_element_width_threshold`.
 const SHORT_ITEM_WIDTH: usize = 10;
 
-/// rustfmt's simple expression: a literal or path, or field access, `?`, `as`, a prefix
-/// operator or indexing over simple expressions.
+/// rustfmt's simple expression: a literal or a single name (rustfmt counts a path of more than
+/// one segment as compound), or field access, `?`, `as`, a prefix operator, indexing or
+/// `[x; n]` over simple expressions.
 fn is_simple(expr: &Expr<'_>) -> bool {
     match expr {
-        Expr::BoolLit(_)
-        | Expr::NumLit(..)
-        | Expr::StrLit(_)
-        | Expr::CharLit(_)
-        | Expr::Var(_)
-        | Expr::Path(_) => true,
+        Expr::BoolLit(_) | Expr::NumLit(..) | Expr::StrLit(_) | Expr::CharLit(_) | Expr::Var(_) => {
+            true
+        }
         Expr::AssociatedItem(inner, _)
         | Expr::Try(inner)
         | Expr::As(inner, _)
         | Expr::Unary(_, inner) => is_simple(inner),
-        Expr::Index(inner, index) => is_simple(inner) && is_simple(index),
+        Expr::Index(inner, other) | Expr::ArrayRepeat(inner, other) => {
+            is_simple(inner) && is_simple(other)
+        }
         _ => false,
     }
 }
 
+/// Whether rustfmt lets this expression, as a list's only item, break in place of the list.
 fn overflows(expr: &Expr<'_>) -> bool {
     match expr {
         Expr::Call(_) | Expr::Struct(_) | Expr::Array(_) => true,

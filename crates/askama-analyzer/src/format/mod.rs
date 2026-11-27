@@ -1593,11 +1593,11 @@ pub fn run(
     let mut files = Vec::new();
     for path in paths {
         if path.is_dir() {
-            templates_under(
-                path,
-                path.file_name().is_some_and(|name| name == "templates"),
-                &mut files,
-            );
+            let inside = std::path::absolute(path).is_ok_and(|path| {
+                path.components()
+                    .any(|part| part.as_os_str() == "templates")
+            });
+            templates_under(path, inside, &mut files);
         } else {
             files.push(path.clone());
         }
@@ -1605,6 +1605,7 @@ pub fn run(
     files.sort();
     let syntax = Syntax::default();
     let mut failed = false;
+    let mut annotated = 0;
     for file in &files {
         let source = match fs::read_to_string(file) {
             Ok(source) => source,
@@ -1623,6 +1624,7 @@ pub fn run(
                     let shown = file.strip_prefix(".").unwrap_or(file).display().to_string();
                     for line in annotations(&shown, &source, &formatted) {
                         println!("{line}");
+                        annotated += 1;
                     }
                 } else {
                     println!("{}", file.display());
@@ -1650,6 +1652,12 @@ pub fn run(
             }
         }
     }
+    if annotated > 0 {
+        eprintln!(
+            "{annotated} runs of lines are not formatted; GitHub shows the first 10 annotations of \
+             a step on the diff, and this log has them all"
+        );
+    }
     Ok(if failed {
         ExitCode::FAILURE
     } else {
@@ -1658,25 +1666,35 @@ pub fn run(
 }
 
 /// One annotation for each run of lines formatting changes, holding the run as it is formatted.
+/// Lines are split at `\n` alone, as GitHub numbers them.
 fn annotations(file: &str, source: &str, formatted: &str) -> Vec<String> {
-    let diff = similar::TextDiff::from_lines(source, formatted);
+    let old: Vec<_> = source.split_inclusive('\n').collect();
     let new: Vec<_> = formatted.split_inclusive('\n').collect();
-    diff.grouped_ops(0)
+    let ops = similar::capture_diff_slices(similar::Algorithm::Myers, &old, &new);
+    similar::group_diff_ops(ops, 0)
         .iter()
         .map(|group| {
             let (first, last) = (&group[0], &group[group.len() - 1]);
-            let old = first.old_range().start..last.old_range().end;
+            let removed = first.old_range().start..last.old_range().end;
             let added = first.new_range().start..last.new_range().end;
-            let line = old.start + 1;
+            let text = new[added.clone()].concat();
+            let text = text.trim_end_matches('\n');
+            if removed.is_empty() {
+                // An insertion has no lines of its own: mark the line it follows.
+                let (line, place) = match removed.start {
+                    0 => (1, "before"),
+                    after => (after, "after"),
+                };
+                let message =
+                    format!("Not formatted: askama-analyzer fmt inserts {place} this line\n{text}");
+                return crate::check::annotation(file, line, Some(line), None, &message);
+            }
             let message = if added.is_empty() {
                 "Not formatted: askama-analyzer fmt removes these lines.".to_owned()
             } else {
-                format!(
-                    "Not formatted: askama-analyzer fmt writes\n{}",
-                    new[added].concat().trim_end_matches('\n')
-                )
+                format!("Not formatted: askama-analyzer fmt writes\n{text}")
             };
-            crate::check::annotation(file, line, Some(old.end.max(line)), None, &message)
+            crate::check::annotation(file, removed.start + 1, Some(removed.end), None, &message)
         })
         .collect()
 }
@@ -2409,6 +2427,15 @@ text
             .map(|n| format!("-name_{n}"))
             .collect::<Vec<_>>()
             .join(",");
+        let paths = (1..=30)
+            .map(|n| format!("K::V{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(
+            formatted(&format!("{{% let ks = [{paths}] %}}"))
+                .contains("\n        K::V1,\n        K::V2,\n"),
+            "paths of more than one segment are compound to rustfmt"
+        );
         assert_eq!(
             formatted(&format!("{{% let xs = [{names},a.b[0]?] %}}")),
             "{%\n    let xs = [\n        -name_1, -name_2, -name_3, -name_4, -name_5, -name_6, -name_7, \
@@ -2439,6 +2466,20 @@ text
                  writes%0A{{ x }}",
                 "::error file=templates/t.html,line=5,endLine=5::Not formatted: askama-analyzer fmt \
                  writes%0A{{ y }}",
+            ]
+        );
+        assert_eq!(
+            annotations("t.html", "a\n]\n", "a\n  b,\n]\n"),
+            [
+                "::error file=t.html,line=1,endLine=1::Not formatted: askama-analyzer fmt inserts \
+              after this line%0A  b,"
+            ]
+        );
+        assert_eq!(
+            annotations("t.html", "a\rb\n{{x}}\n", "a\rb\n{{ x }}\n"),
+            [
+                "::error file=t.html,line=2,endLine=2::Not formatted: askama-analyzer fmt writes%0A\
+              {{ x }}"
             ]
         );
         assert_eq!(
