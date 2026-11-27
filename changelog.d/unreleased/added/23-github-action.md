@@ -1,0 +1,1 @@
+- **A GitHub Action.** `uses: radiosilence/askama-analyzer@main` downloads a verified release and runs `fmt --check --annotate`, and optionally `check --annotate`, so a workflow checks templates in one step and shows what it finds on the diff.
