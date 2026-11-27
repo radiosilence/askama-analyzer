@@ -343,12 +343,12 @@ impl Workspace {
         let Some(Ok(generated)) = file.items.get(item)?.generated.as_ref() else {
             return None;
         };
-        let (template, start) = template_offset(generated, start)?;
+        let (template, start) = template_offset(generated, start, Edge::Start)?;
         let end = match sent.overlay.place(range.end) {
             Place::Generated {
                 item: end_item,
                 offset,
-            } if end_item == item => template_offset(generated, offset)
+            } if end_item == item => template_offset(generated, offset, Edge::End)
                 .filter(|(end_template, end)| *end_template == template && *end >= start)
                 .map(|(_, end)| end),
             _ => None,
@@ -461,11 +461,25 @@ pub fn generated_offset(generated: &Generated, template: &Path, offset: usize) -
         })
 }
 
+/// Which token an offset on the boundary between two belongs to: a range's start to the token
+/// that begins there, its end to the token that ends there. In `product.name`, the start of
+/// `name` is also the end of the `.`, which askama spans as `product`.
+#[derive(Clone, Copy)]
+pub enum Edge {
+    Start,
+    End,
+}
+
 /// The template and offset a generated offset came from.
-pub fn template_offset(generated: &Generated, offset: usize) -> Option<(Arc<Path>, usize)> {
-    let at = generated
-        .map
-        .partition_point(|mapping| mapping.generated.end < offset);
+pub fn template_offset(
+    generated: &Generated,
+    offset: usize,
+    edge: Edge,
+) -> Option<(Arc<Path>, usize)> {
+    let at = generated.map.partition_point(|mapping| match edge {
+        Edge::Start => mapping.generated.end <= offset,
+        Edge::End => mapping.generated.end < offset,
+    });
     let mapping = generated
         .map
         .get(at)
