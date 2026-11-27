@@ -5,6 +5,7 @@
 ### Changed
 
 - **Every broken tag has its delimiters on lines of their own.** A tag that starts its line and does not fit on it no longer breaks in place around its delimiters: like a tag broken after other text, its expression goes one level in from the line's indentation and its closing delimiter returns to that indentation.
+- **Typed macro parameters, `filter` tags and let chains are laid out.** A `macro` tag's typed parameters go one per line when they do not fit, a `filter` tag's filters are laid out like an expression's, and an `if` condition chained with `&& let` breaks before each `&&`; before, these tags only had their spacing normalised.
 
 ## 0.4.0
 
