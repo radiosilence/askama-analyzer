@@ -3,7 +3,8 @@
 //! The printer works over `askama_parser`'s expression tree. Every construct either fits on
 //! the rest of its line or breaks in one consistent way, chosen as rustfmt chooses with its
 //! default settings: argument lists break one item per line with the closing delimiter on a
-//! line of its own (or, for a single call-like argument, let that argument break instead),
+//! line of its own (or, for a single call-like argument, let that argument break instead;
+//! an array of short simple items is packed onto lines instead),
 //! method chains break one call per line, and binary operators break before the operator.
 //! Continuation lines are indented in steps of four spaces from the indentation of the line
 //! the tag starts on, as rustfmt indents blocks from the statement's indentation.
@@ -175,10 +176,13 @@ impl<'s> Printer<'s> {
             }
             Expr::BinOp(_) | Expr::Concat(_) => self.binary(expr, level, col, trail)?,
             Expr::Filter(filter) => self.filter(filter, level, col, trail)?,
-            Expr::Array(items) => {
-                let items: Vec<_> = items.iter().map(|item| Item::Expr(item)).collect();
-                self.list("[", &items, "]", false, level, col, trail)?
-            }
+            Expr::Array(items) => match self.short_items(items) {
+                Some(short) => self.packed(&short, level),
+                None => {
+                    let items: Vec<_> = items.iter().map(|item| Item::Expr(item)).collect();
+                    self.list("[", &items, "]", false, level, col, trail)?
+                }
+            },
             Expr::Tuple(items) if items.len() > 1 => {
                 let items: Vec<_> = items.iter().map(|item| Item::Expr(item)).collect();
                 self.list("(", &items, ")", false, level, col, trail)?
@@ -406,7 +410,8 @@ impl<'s> Printer<'s> {
     }
 
     /// A delimited, comma-separated list: on one line; or its one call-like item broken in
-    /// place, as rustfmt overflows a last argument; or one item per line, each followed by a
+    /// place, as rustfmt overflows a last argument; or one item per line (short arrays are
+    /// packed by [`Printer::packed`] before they get here), each followed by a
     /// comma (askama accepts a trailing one in every list this prints), with the closing
     /// delimiter on a line of its own.
     #[allow(clippy::too_many_arguments)]
@@ -463,6 +468,46 @@ impl<'s> Printer<'s> {
         out.push_str(&self.newline(level));
         out.push_str(close);
         Some(out)
+    }
+
+    /// The array's items written flat, when every one is a simple expression at most
+    /// [`SHORT_ITEM_WIDTH`] wide: rustfmt packs such arrays rather than giving each item a line.
+    fn short_items(&self, items: &[WithSpan<Box<Expr<'_>>>]) -> Option<Vec<String>> {
+        if items.len() < 2 {
+            return None;
+        }
+        items
+            .iter()
+            .map(|item| {
+                let simple = is_simple(item);
+                self.flat(item)
+                    .filter(|flat| simple && width(flat) <= SHORT_ITEM_WIDTH)
+            })
+            .collect()
+    }
+
+    /// Short items filled onto lines one level in, each followed by a comma, with the closing
+    /// bracket on a line of its own.
+    fn packed(&self, items: &[String], level: usize) -> String {
+        let start = self.column(level + 1);
+        let mut out = "[".to_owned();
+        let mut col = self.max_width;
+        for item in items {
+            let piece = width(item) + 1;
+            if col + 1 + piece > self.max_width {
+                out.push_str(&self.newline(level + 1));
+                col = start;
+            } else {
+                out.push(' ');
+                col += 1;
+            }
+            out.push_str(item);
+            out.push(',');
+            col += piece;
+        }
+        out.push_str(&self.newline(level));
+        out.push(']');
+        out
     }
 
     fn structure(
@@ -651,6 +696,28 @@ impl<'s> Printer<'s> {
         let start = self.end_column(&input, col) + width(&name);
         let args = self.list("(", &items, ")", false, level, start, trail)?;
         Some(format!("{input}{name}{args}"))
+    }
+}
+
+/// rustfmt's `short_array_element_width_threshold`.
+const SHORT_ITEM_WIDTH: usize = 10;
+
+/// rustfmt's simple expression: a literal or a single name (rustfmt counts a path of more than
+/// one segment as compound), or field access, `?`, `as`, a prefix operator, indexing or
+/// `[x; n]` over simple expressions.
+fn is_simple(expr: &Expr<'_>) -> bool {
+    match expr {
+        Expr::BoolLit(_) | Expr::NumLit(..) | Expr::StrLit(_) | Expr::CharLit(_) | Expr::Var(_) => {
+            true
+        }
+        Expr::AssociatedItem(inner, _)
+        | Expr::Try(inner)
+        | Expr::As(inner, _)
+        | Expr::Unary(_, inner) => is_simple(inner),
+        Expr::Index(inner, other) | Expr::ArrayRepeat(inner, other) => {
+            is_simple(inner) && is_simple(other)
+        }
+        _ => false,
     }
 }
 

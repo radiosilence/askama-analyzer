@@ -1584,6 +1584,7 @@ fn format_tokens(body: &str, keep_breaks: bool) -> Option<String> {
 /// templates are indented as their `.editorconfig` says, unless `indent_html` is false.
 pub fn run(
     check: bool,
+    annotate: bool,
     paths: &[PathBuf],
     max_width: usize,
     indent_html: bool,
@@ -1592,7 +1593,11 @@ pub fn run(
     let mut files = Vec::new();
     for path in paths {
         if path.is_dir() {
-            templates_under(path, false, &mut files);
+            let inside = std::path::absolute(path).is_ok_and(|path| {
+                path.components()
+                    .any(|part| part.as_os_str() == "templates")
+            });
+            templates_under(path, inside, &mut files);
         } else {
             files.push(path.clone());
         }
@@ -1600,6 +1605,7 @@ pub fn run(
     files.sort();
     let syntax = Syntax::default();
     let mut failed = false;
+    let mut annotated = 0;
     for file in &files {
         let source = match fs::read_to_string(file) {
             Ok(source) => source,
@@ -1613,8 +1619,16 @@ pub fn run(
         let options = options_for(&path, max_width, indent_html);
         match format_in(&source, &path, &disk, &syntax, &options) {
             Ok(formatted) if formatted == source => {}
-            Ok(_) if check => {
-                println!("{}", file.display());
+            Ok(formatted) if check => {
+                if annotate {
+                    let shown = file.strip_prefix(".").unwrap_or(file).display().to_string();
+                    for line in annotations(&shown, &source, &formatted) {
+                        println!("{line}");
+                        annotated += 1;
+                    }
+                } else {
+                    println!("{}", file.display());
+                }
                 failed = true;
             }
             Ok(formatted) => {
@@ -1623,17 +1637,66 @@ pub fn run(
                     failed = true;
                 }
             }
+            Err(error) if annotate => {
+                let message = format!("askama-analyzer cannot format this template: {error}");
+                let file = file.strip_prefix(".").unwrap_or(file).display().to_string();
+                println!(
+                    "{}",
+                    crate::check::annotation(&file, 1, None, None, &message)
+                );
+                failed = true;
+            }
             Err(error) => {
                 eprintln!("{}: {error}", file.display());
                 failed = true;
             }
         }
     }
+    if annotated > 0 {
+        eprintln!(
+            "{annotated} runs of lines are not formatted; GitHub shows the first 10 annotations of \
+             a step on the diff, and this log has them all"
+        );
+    }
     Ok(if failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// One annotation for each run of lines formatting changes, holding the run as it is formatted.
+/// Lines are split at `\n` alone, as GitHub numbers them.
+fn annotations(file: &str, source: &str, formatted: &str) -> Vec<String> {
+    let old: Vec<_> = source.split_inclusive('\n').collect();
+    let new: Vec<_> = formatted.split_inclusive('\n').collect();
+    let ops = similar::capture_diff_slices(similar::Algorithm::Myers, &old, &new);
+    similar::group_diff_ops(ops, 0)
+        .iter()
+        .map(|group| {
+            let (first, last) = (&group[0], &group[group.len() - 1]);
+            let removed = first.old_range().start..last.old_range().end;
+            let added = first.new_range().start..last.new_range().end;
+            let text = new[added.clone()].concat();
+            let text = text.trim_end_matches('\n');
+            if removed.is_empty() {
+                // An insertion has no lines of its own: mark the line it follows.
+                let (line, place) = match removed.start {
+                    0 => (1, "before"),
+                    after => (after, "after"),
+                };
+                let message =
+                    format!("Not formatted: askama-analyzer fmt inserts {place} this line\n{text}");
+                return crate::check::annotation(file, line, Some(line), None, &message);
+            }
+            let message = if added.is_empty() {
+                "Not formatted: askama-analyzer fmt removes these lines.".to_owned()
+            } else {
+                format!("Not formatted: askama-analyzer fmt writes\n{text}")
+            };
+            crate::check::annotation(file, removed.start + 1, Some(removed.end), None, &message)
+        })
+        .collect()
 }
 
 fn templates_under(directory: &Path, inside: bool, found: &mut Vec<PathBuf>) {
@@ -2322,8 +2385,8 @@ text
         );
         assert_eq!(options_for(&page, 100, false).html_indent, None);
         // And `fmt`'s.
-        let code =
-            run(false, std::slice::from_ref(&directory), 100, true).expect("the templates format");
+        let code = run(false, false, std::slice::from_ref(&directory), 100, true)
+            .expect("the templates format");
         assert_eq!(code, ExitCode::SUCCESS);
         assert_eq!(
             fs::read_to_string(&page).expect("the template is read"),
@@ -2346,5 +2409,85 @@ text
     fn formatting_twice_changes_nothing() {
         let once = formatted("{%for x in xs if x>0%}{{x|f(1,2)}}{%endfor%}");
         assert_eq!(formatted(&once), once);
+    }
+
+    #[test]
+    fn arrays_of_short_simple_items_are_packed_as_rustfmt_packs_them() {
+        let nums = (1..=40)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            formatted(&format!("{{% let ids = [{nums}] %}}")),
+            "{%\n    let ids = [\n        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, \
+             20, 21, 22, 23, 24, 25,\n        26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, \
+             40,\n    ]\n%}"
+        );
+        let names = (1..=12)
+            .map(|n| format!("-name_{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let paths = (1..=30)
+            .map(|n| format!("K::V{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(
+            formatted(&format!("{{% let ks = [{paths}] %}}"))
+                .contains("\n        K::V1,\n        K::V2,\n"),
+            "paths of more than one segment are compound to rustfmt"
+        );
+        assert_eq!(
+            formatted(&format!("{{% let xs = [{names},a.b[0]?] %}}")),
+            "{%\n    let xs = [\n        -name_1, -name_2, -name_3, -name_4, -name_5, -name_6, -name_7, \
+             -name_8, -name_9, -name_10,\n        -name_11, -name_12, a.b[0]?,\n    ]\n%}"
+        );
+    }
+
+    #[test]
+    fn arrays_with_a_long_or_compound_item_get_a_line_per_item() {
+        let mut items = (1..=30).map(|n| n.to_string()).collect::<Vec<_>>();
+        items.push("f(x)".into());
+        let out = formatted(&format!("{{% let xs = [{}] %}}", items.join(",")));
+        assert!(out.contains("\n        1,\n        2,\n"), "{out}");
+        items.pop();
+        items.push("eleven_wide".into());
+        let out = formatted(&format!("{{% let xs = [{}] %}}", items.join(",")));
+        assert!(out.contains("\n        1,\n        2,\n"), "{out}");
+    }
+
+    #[test]
+    fn annotations_mark_each_changed_run_with_its_formatted_text() {
+        let source = "a\n{{x}}\nb\nc\n{{ y }}  \n";
+        let formatted = "a\n{{ x }}\nb\nc\n{{ y }}\n";
+        assert_eq!(
+            annotations("templates/t.html", source, formatted),
+            [
+                "::error file=templates/t.html,line=2,endLine=2::Not formatted: askama-analyzer fmt \
+                 writes%0A{{ x }}",
+                "::error file=templates/t.html,line=5,endLine=5::Not formatted: askama-analyzer fmt \
+                 writes%0A{{ y }}",
+            ]
+        );
+        assert_eq!(
+            annotations("t.html", "a\n]\n", "a\n  b,\n]\n"),
+            [
+                "::error file=t.html,line=1,endLine=1::Not formatted: askama-analyzer fmt inserts \
+              after this line%0A  b,"
+            ]
+        );
+        assert_eq!(
+            annotations("t.html", "a\rb\n{{x}}\n", "a\rb\n{{ x }}\n"),
+            [
+                "::error file=t.html,line=2,endLine=2::Not formatted: askama-analyzer fmt writes%0A\
+              {{ x }}"
+            ]
+        );
+        assert_eq!(
+            annotations("t,1:%.html", "a\n\n", "a\n"),
+            [
+                "::error file=t%2C1%3A%25.html,line=2,endLine=2::Not formatted: askama-analyzer fmt \
+              removes these lines."
+            ]
+        );
     }
 }
