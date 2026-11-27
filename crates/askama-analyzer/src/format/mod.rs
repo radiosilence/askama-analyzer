@@ -2367,8 +2367,8 @@ text
         );
         assert_eq!(options_for(&page, 100, false).html_indent, None);
         // And `fmt`'s.
-        let code =
-            run(false, std::slice::from_ref(&directory), 100, true).expect("the templates format");
+        let code = run(false, false, std::slice::from_ref(&directory), 100, true)
+            .expect("the templates format");
         assert_eq!(code, ExitCode::SUCCESS);
         assert_eq!(
             fs::read_to_string(&page).expect("the template is read"),
@@ -2443,8 +2443,10 @@ text
         );
         assert_eq!(
             annotations("t,1:%.html", "a\n\n", "a\n"),
-            ["::error file=t%2C1%3A%25.html,line=2,endLine=2::Not formatted: askama-analyzer fmt \
-              removes these lines."]
+            [
+                "::error file=t%2C1%3A%25.html,line=2,endLine=2::Not formatted: askama-analyzer fmt \
+              removes these lines."
+            ]
         );
     }
 }
