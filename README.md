@@ -8,6 +8,10 @@ Powers [zed-askama](https://github.com/radiosilence/zed-askama) a Zed extension.
 
 I've spent quite a while now playing with non-react stacks out of boredom and curiosity, the one that's stuck for me has been axum/askama/datastar, and I'm working on building up the ecosystem around these things. With a lot of templating alternatives to react, you miss out on the incredible type-safety TSX gives you, and those ergonomics are important to both manual and AI-assisted coding. The stack is pleasant to use, blindingly fast and low-resource-using, solid, and SSR by default.
 
+However, being able to drop into templates and edit them kinda sucked as you're effectively blind.
+
+No more! With this and the zed extension, you now have full LSP support for symbols, clicking through to stuff, renaming, formatting, and type/error checking using rust-analyzer.
+
 Askama compiles a template into Rust inside `#[derive(Template)]`. rust-analyzer analyses that expansion but cannot map it back to the template, so a broken template shows up as one error on the struct, and the template itself gets no completion or navigation. Existing editor support either highlights only, or approximates askama's code generation by hand and misses whatever the approximation does not cover.
 
 `askama-analyzer` runs askama's own code generator, keeps the template position of every token it generates, and asks rust-analyzer about the result. Answers come back in template positions, and they are the compiler's answers, because the code is the compiler's code.
