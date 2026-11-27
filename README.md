@@ -30,7 +30,7 @@ Some projects I've made for the afformentioned stack:
 
 Each [release](https://github.com/radiosilence/askama-analyzer/releases) has archives for macOS (signed and notarised), Linux (static) and Windows, on x86_64 and arm64.
 
-From mise:
+Using mise:
 
 ```sh
 mise use -g github:radiosilence/askama-analyzer@latest
