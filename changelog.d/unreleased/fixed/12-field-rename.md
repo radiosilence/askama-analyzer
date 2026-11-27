@@ -1,0 +1,1 @@
+- **Renaming a field from a template renames its uses in templates too.** The edit for `name` in `product.name` was mapped onto the whole access and dropped, so only the Rust changed; errors on a field now sit on its name rather than the whole access.
