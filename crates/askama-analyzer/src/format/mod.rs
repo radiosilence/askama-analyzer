@@ -920,8 +920,26 @@ enum Piece {
 /// expressions laid out; `None` when the tag holds no expression the printer lays out, or one
 /// it cannot print back to the same tree, so the tag keeps its tokens' layout. A `broken` tag
 /// has its contents on lines of their own, one level in from the line's indentation, and its
-/// closing delimiter back at that indentation.
+/// closing delimiter back at that indentation. A tag that starts its line and does not fit on
+/// it breaks the same way, so every broken tag has one shape.
 fn lay_out(
+    kind: TagKind,
+    body: &str,
+    open: &str,
+    close: &str,
+    line: &str,
+    options: &Options,
+    broken: bool,
+) -> Option<String> {
+    let laid = lay_out_as(kind, body, open, close, line, options, broken)?;
+    let starts_line = line.trim_start_matches([' ', '\t']).is_empty();
+    if !broken && starts_line && laid.contains('\n') {
+        return lay_out_as(kind, body, open, close, line, options, true);
+    }
+    Some(laid)
+}
+
+fn lay_out_as(
     kind: TagKind,
     body: &str,
     open: &str,
@@ -1606,15 +1624,17 @@ mod tests {
     #[test]
     fn a_long_call_breaks_its_arguments_and_chains_as_rustfmt_does() {
         let source = "    {{ kit::Combo::new(kit::Input::url(\"url\").label(\"Download link\").placeholder(\"Download link, such as a Bandcamp purchase\").autocomplete(\"off\").required(), import.submit(kit::Button::primary(\"Import\"))).compact() }}\n";
-        let expected = r#"    {{ kit::Combo::new(
-        kit::Input::url("url")
-            .label("Download link")
-            .placeholder("Download link, such as a Bandcamp purchase")
-            .autocomplete("off")
-            .required(),
-        import.submit(kit::Button::primary("Import")),
-    )
-    .compact() }}
+        let expected = r#"    {{
+        kit::Combo::new(
+            kit::Input::url("url")
+                .label("Download link")
+                .placeholder("Download link, such as a Bandcamp purchase")
+                .autocomplete("off")
+                .required(),
+            import.submit(kit::Button::primary("Import")),
+        )
+        .compact()
+    }}
 "#;
         assert_eq!(formatted(source), expected);
     }
@@ -1724,27 +1744,27 @@ mod tests {
     #[test]
     fn a_lone_call_argument_breaks_in_place() {
         let source = "{{ foo(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, ccccccccccccccccccccccccc, d)) }}";
-        let expected = "{{ foo(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n    ccccccccccccccccccccccccc,\n    d,\n)) }}";
+        let expected = "{{\n    foo(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n        ccccccccccccccccccccccccc,\n        d,\n    ))\n}}";
         assert_eq!(formatted(source), expected);
     }
 
     #[test]
     fn a_chain_on_a_short_root_keeps_its_first_link_on_the_root_line() {
-        let source = "{{ self.foooooooooooooooooooooooooo.barrrrrrrrrrrrrrrrrrrrrrrrrrrrr().bazzzzzzzzzzzzzzzzzzzzzzzzzzzzzz() }}";
-        let expected = "{{ self.foooooooooooooooooooooooooo\n    .barrrrrrrrrrrrrrrrrrrrrrrrrrrrr()\n    .bazzzzzzzzzzzzzzzzzzzzzzzzzzzzzz() }}";
+        let source = "{{ self.foooooooooooooooooooooooooo.barrrrrrrrrrrrrrrrrrrrrrrrrrrrr().bazzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz() }}";
+        let expected = "{{\n    self.foooooooooooooooooooooooooo\n        .barrrrrrrrrrrrrrrrrrrrrrrrrrrrr()\n        .bazzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz()\n}}";
         assert_eq!(formatted(source), expected);
         let source = "{{ x.y(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) }}";
-        let expected = "{{ x.y(\n    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n) }}";
+        let expected = "{{\n    x.y(\n        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n    )\n}}";
         assert_eq!(formatted(source), expected);
     }
 
     #[test]
     fn binary_operators_break_before_the_operator() {
         let source = "{% if aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa && bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb || cccccccccccccccccccccc %}{% endif %}";
-        let expected = "{% if aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa && bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n    || cccccccccccccccccccccc %}{% endif %}";
+        let expected = "{%\n    if aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa && bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n        || cccccccccccccccccccccc\n%}{% endif %}";
         assert_eq!(formatted(source), expected);
         let source = "{{ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ~ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ~ ccccccccccccccc }}";
-        let expected = "{{ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    ~ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n    ~ ccccccccccccccc }}";
+        let expected = "{{\n    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n        ~ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n        ~ ccccccccccccccc\n}}";
         assert_eq!(formatted(source), expected);
     }
 
@@ -1755,14 +1775,14 @@ mod tests {
             "{{ a bitor b xor c bitand d }}{{ x|f(y = 1) }}"
         );
         let source = "{{ value|truncate(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)|safe }}";
-        let expected = "{{ value|truncate(\n    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n)|safe }}";
+        let expected = "{{\n    value|truncate(\n        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n    )|safe\n}}";
         assert_eq!(formatted(source), expected);
     }
 
     #[test]
     fn block_tags_lay_out_their_expressions() {
         let source = "{% for item in items.iter().filter(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa).map(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) %}{% endfor %}";
-        let expected = "{% for item in items\n    .iter()\n    .filter(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\n    .map(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) %}{% endfor %}";
+        let expected = "{%\n    for item in items\n        .iter()\n        .filter(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\n        .map(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)\n%}{% endfor %}";
         assert_eq!(formatted(source), expected);
         assert_eq!(
             formatted("{% let  x = f( a ) %}{% if let Some( y ) = x %}{% endif %}"),
@@ -1779,8 +1799,27 @@ mod tests {
     #[test]
     fn whitespace_control_markers_stay_on_a_broken_tag() {
         let source = "{{- f(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) ~}}";
-        let expected = "{{- f(\n    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n) ~}}";
+        let expected = "{{-\n    f(\n        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n    )\n~}}";
         assert_eq!(formatted(source), expected);
+    }
+
+    /// A tag that starts its line breaks as one after other text does: its delimiters on
+    /// lines of their own, and what follows its closing delimiter staying with it.
+    #[test]
+    fn every_broken_tag_has_its_delimiters_on_lines_of_their_own() {
+        let (a, b) = ("a".repeat(46), "b".repeat(50));
+        assert_eq!(
+            formatted(&format!(
+                "{{%- call kit::card({a}, {b}) -%}}{{% endcall %}}"
+            )),
+            format!(
+                "{{%-\n    call kit::card(\n        {a},\n        {b},\n    )\n-%}}{{% endcall %}}"
+            )
+        );
+        assert_eq!(
+            formatted(&format!("x\n  {{% let x = f({a}, {b}) %}}")),
+            format!("x\n  {{%\n      let x = f(\n          {a},\n          {b},\n      )\n  %}}")
+        );
     }
 
     #[test]
@@ -1791,7 +1830,7 @@ mod tests {
         };
         assert_eq!(
             formatted_with("{{ f(alpha, beta, gamma) }}", &options),
-            "{{ f(\n    alpha,\n    beta,\n    gamma,\n) }}"
+            "{{\n    f(\n        alpha,\n        beta,\n        gamma,\n    )\n}}"
         );
     }
 
@@ -1889,7 +1928,7 @@ text
     #[test]
     fn a_broken_tag_is_indented_from_its_lines_new_indentation() {
         let source = "<div>\n{{ f(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) }}\n</div>";
-        let expected = "<div>\n  {{ f(\n      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n      bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n  ) }}\n</div>";
+        let expected = "<div>\n  {{\n      f(\n          aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n          bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n      )\n  }}\n</div>";
         assert_eq!(html(source), expected);
     }
 
