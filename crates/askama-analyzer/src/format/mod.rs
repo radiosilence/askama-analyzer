@@ -469,7 +469,13 @@ fn lay_out(
     };
     let base = &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
     let base_width = columns(base);
-    let max_width = options.max_width;
+    // A tag after other text on its line stays on one line: breaking it would leave that text
+    // as long as it was, and put line breaks in the middle of markup.
+    let max_width = if base.len() == line.len() {
+        options.max_width
+    } else {
+        usize::MAX
+    };
 
     let mut parts = Vec::with_capacity(pieces.len());
     for piece in &pieces {
@@ -1115,6 +1121,16 @@ mod tests {
     .compact() }}
 "#;
         assert_eq!(formatted(source), expected);
+    }
+
+    #[test]
+    fn a_tag_after_text_on_its_line_stays_on_one_line() {
+        let long = format!("<h2 class=\"{}\">", "x".repeat(90));
+        let source = format!("{long}{{{{ f(\n    \"change language\",\n) }}}}</h2>");
+        assert_eq!(
+            formatted(&source),
+            format!("{long}{{{{ f(\"change language\") }}}}</h2>")
+        );
     }
 
     #[test]
