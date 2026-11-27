@@ -28,7 +28,15 @@ Some projects I've made for the afformentioned stack:
 
 ## Installing
 
-Each [release](https://github.com/radiosilence/askama-analyzer/releases) has archives for macOS (signed and notarised), Linux (static) and Windows, on x86_64 and arm64. Or build it:
+Each [release](https://github.com/radiosilence/askama-analyzer/releases) has archives for macOS (signed and notarised), Linux (static) and Windows, on x86_64 and arm64.
+
+From mise:
+
+```sh
+mise use -g github:radiosilence/askama-analyzer@latest
+```
+
+Or build it:
 
 ```sh
 cargo install --locked --git https://github.com/radiosilence/askama-analyzer askama-analyzer
