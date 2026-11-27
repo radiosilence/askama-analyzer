@@ -1,0 +1,1 @@
+- **Positions after non-ASCII text.** Diagnostics, hover, go-to-definition and rename landed too far right on template lines after characters such as `·` or curly quotes, by one byte per extra UTF-8 byte before them; the askama fork now hands proc-macro2 the character offsets it expects.
