@@ -9,6 +9,8 @@
 //! that continue a tag (an askama tag's are laid out with its expression; an HTML tag's move
 //! with the line the tag starts on, unless they start inside an attribute's value).
 
+use std::ops::Range;
+
 use super::{Segment, TagKind, first_word};
 
 const VOID: &[&str] = &[
@@ -362,6 +364,166 @@ fn tag_name(text: &str) -> String {
     text[..end].to_ascii_lowercase()
 }
 
+/// An HTML start tag on one line, with the places it may break: the whitespace before each
+/// attribute, and before its `>` or `/>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StartTag {
+    /// From its `<` to just after its `>`.
+    pub(super) range: Range<usize>,
+    /// The whitespace before each attribute, outside quotes and outside any askama block
+    /// opened inside the tag.
+    pub(super) gaps: Vec<Range<usize>>,
+    /// Where its `>` or `/>` starts, and the whitespace before it, if any.
+    pub(super) close: usize,
+    pub(super) close_gap: Option<Range<usize>>,
+}
+
+/// Every HTML start tag in `source` that has attributes and sits on one line, outside the
+/// elements whose contents are not HTML and outside comments.
+pub(super) fn start_tags(source: &str, segments: &[Segment]) -> Vec<StartTag> {
+    struct Open {
+        start: usize,
+        name: String,
+        gaps: Vec<Range<usize>>,
+        quote: Option<u8>,
+        depth: usize,
+        last: Option<usize>,
+        valid: bool,
+    }
+    let mut found = Vec::new();
+    let mut open: Option<Open> = None;
+    let mut verbatim: Option<String> = None;
+    let mut comment = false;
+    for segment in segments {
+        let range = match segment {
+            Segment::Verbatim(range) => range.clone(),
+            Segment::Raw(range) | Segment::Tag { range, .. } => {
+                if let Some(tag) = &mut open {
+                    tag.last = None;
+                    if source[range.clone()].contains('\n') || matches!(segment, Segment::Raw(_)) {
+                        tag.valid = false;
+                    }
+                    if let Segment::Tag {
+                        kind: TagKind::Block,
+                        inner,
+                        ..
+                    } = segment
+                    {
+                        let word = first_word(&source[inner.clone()]);
+                        if matches!(
+                            word,
+                            "if" | "for" | "match" | "block" | "macro" | "filter" | "call"
+                        ) {
+                            tag.depth += 1;
+                        } else if word.starts_with("end") {
+                            tag.depth = tag.depth.saturating_sub(1);
+                        }
+                    }
+                }
+                continue;
+            }
+        };
+        let bytes = source.as_bytes();
+        let mut i = range.start;
+        while i < range.end {
+            let b = bytes[i];
+            if comment {
+                if bytes[i..range.end].starts_with(b"-->") {
+                    comment = false;
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            if let Some(name) = &verbatim {
+                if b == b'<'
+                    && bytes.get(i + 1) == Some(&b'/')
+                    && tag_name(&source[i + 2..]) == *name
+                {
+                    verbatim = None;
+                }
+                i += 1;
+                continue;
+            }
+            let Some(tag) = &mut open else {
+                if bytes[i..range.end].starts_with(b"<!--") {
+                    comment = true;
+                    i += 4;
+                } else if b == b'<' && bytes.get(i + 1).is_some_and(u8::is_ascii_alphabetic) {
+                    let name = tag_name(&source[i + 1..]);
+                    open = Some(Open {
+                        start: i,
+                        gaps: Vec::new(),
+                        quote: None,
+                        depth: 0,
+                        last: None,
+                        valid: true,
+                        name,
+                    });
+                    i += 1 + open.as_ref().map_or(0, |tag| tag.name.len());
+                } else {
+                    i += 1;
+                }
+                continue;
+            };
+            match tag.quote {
+                Some(q) => {
+                    if b == q {
+                        tag.quote = None;
+                    }
+                    tag.last = Some(i);
+                    i += 1;
+                }
+                None if b == b'"' || b == b'\'' => {
+                    tag.quote = Some(b);
+                    tag.last = Some(i);
+                    i += 1;
+                }
+                None if b == b'\n' => {
+                    tag.valid = false;
+                    i += 1;
+                }
+                None if b == b' ' || b == b'\t' => {
+                    let start = i;
+                    while i < range.end && matches!(bytes[i], b' ' | b'\t') {
+                        i += 1;
+                    }
+                    if tag.depth == 0 {
+                        tag.gaps.push(start..i);
+                    }
+                }
+                None if b == b'>' => {
+                    let close = match tag.last {
+                        Some(slash) if bytes[slash] == b'/' && slash + 1 == i => slash,
+                        _ => i,
+                    };
+                    let mut gaps = std::mem::take(&mut tag.gaps);
+                    let close_gap = gaps.pop_if(|gap| gap.end == close);
+                    if tag.valid && !gaps.is_empty() {
+                        found.push(StartTag {
+                            range: tag.start..i + 1,
+                            gaps,
+                            close,
+                            close_gap,
+                        });
+                    }
+                    if VERBATIM.contains(&tag.name.as_str()) {
+                        verbatim = Some(tag.name.clone());
+                    }
+                    open = None;
+                    i += 1;
+                }
+                None => {
+                    tag.last = Some(i);
+                    i += 1;
+                }
+            }
+        }
+    }
+    found
+}
+
 /// `source` with each line's leading whitespace set by its nesting depth, `unit` per level.
 pub(super) fn reindent(source: &str, segments: &[Segment], unit: &str) -> String {
     let mut indenter = Indenter {
@@ -382,13 +544,20 @@ pub(super) fn reindent(source: &str, segments: &[Segment], unit: &str) -> String
                 }
             }
             Segment::Tag { kind, range, inner } => {
+                let start = indenter.lines.len() - 1;
                 if *kind == TagKind::Block {
                     indenter.askama_block(&source[inner.clone()]);
                 } else {
                     indenter.content();
                 }
                 for _ in source[range.clone()].matches('\n') {
-                    indenter.new_line(true);
+                    if *kind == TagKind::Comment {
+                        // A comment's text is never rendered, so it moves with its first line.
+                        indenter.lines.push(Line::Shift(start));
+                        indenter.head = false;
+                    } else {
+                        indenter.new_line(true);
+                    }
                 }
             }
         }

@@ -20,6 +20,7 @@
 mod html;
 mod layout;
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -111,20 +112,41 @@ pub fn format(source: &str, syntax: &Syntax<'_>, options: &Options) -> Result<St
         }
         base
     };
-    let segments = segments(&indented, syntax);
-    let formatted = render(&indented, &segments, options, None);
-    let again = indent(&formatted, syntax, options);
-    let second = render(&again, &self::segments(&again, syntax), options, None);
-    if tree(&formatted, syntax).as_ref() == Ok(&base) && second == formatted {
+    let mut formatted = format_once(&indented, syntax, options);
+    // A line broken in one pass is measured as broken in the next, so a pass may break what
+    // the one before did not; a few passes settle it.
+    let mut second = String::new();
+    for _ in 0..4 {
+        second = format_once(&indent(&formatted, syntax, options), syntax, options);
+        if second == formatted {
+            break;
+        }
+        std::mem::swap(&mut formatted, &mut second);
+    }
+    let lit = |tree: &str| blank_strings_after(tree, "Lit(Lit { ", 3);
+    let same_tree = tree(&formatted, syntax).map(|tree| lit(&tree)) == Ok(lit(&base));
+    if same_tree
+        && skeleton(&formatted, syntax) == skeleton(&indented, syntax)
+        && second == formatted
+    {
         return Ok(formatted);
     }
     // Find the first tag that, formatted on its own, changes the tree.
+    let segments = segments(&indented, syntax);
     for (index, segment) in segments.iter().enumerate() {
         if !matches!(segment, Segment::Tag { .. }) {
             continue;
         }
-        let alone = render(&indented, &segments, options, Some(index));
-        if tree(&alone, syntax).as_ref() != Ok(&base) {
+        let alone = render(
+            &indented,
+            &segments,
+            &[],
+            options,
+            Some(index),
+            &Breaks::default(),
+            &mut Cache::new(),
+        );
+        if tree(&alone.text, syntax).as_ref() != Ok(&base) {
             return Err(unsafe_at(&indented, segment.range()));
         }
     }
@@ -135,6 +157,61 @@ pub fn format(source: &str, syntax: &Syntax<'_>, options: &Options) -> Result<St
         .position(|(a, b)| a != b)
         .unwrap_or_default();
     Err(unsafe_at_line(&formatted, line))
+}
+
+/// The template's text with each tag replaced by a mark, and the whitespace inside HTML start
+/// tags made canonical: one space between attributes and none before `>`. Breaking a start tag
+/// over lines changes only that whitespace, which is never rendered.
+fn skeleton(source: &str, syntax: &Syntax<'_>) -> String {
+    let mut text = String::with_capacity(source.len());
+    for segment in segments(source, syntax) {
+        match segment {
+            Segment::Tag { .. } => text.push('\u{1}'),
+            Segment::Verbatim(range) | Segment::Raw(range) => text.push_str(&source[range]),
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_tag = false;
+    let mut quote = None;
+    while let Some(c) = chars.next() {
+        if !in_tag {
+            out.push(c);
+            in_tag = c == '<' && chars.peek().is_some_and(char::is_ascii_alphabetic);
+            continue;
+        }
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+                out.push(c);
+            }
+            None if c.is_ascii_whitespace() => {
+                while chars.peek().is_some_and(char::is_ascii_whitespace) {
+                    chars.next();
+                }
+                let mut ahead = chars.clone();
+                let closes = match ahead.next() {
+                    Some('>') => true,
+                    Some('/') => ahead.next() == Some('>'),
+                    _ => false,
+                };
+                if !closes {
+                    out.push(' ');
+                }
+            }
+            None => {
+                if c == '"' || c == '\'' {
+                    quote = Some(c);
+                } else if c == '>' {
+                    in_tag = false;
+                }
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 /// `source` re-indented, when `options` asks for HTML indentation.
@@ -410,21 +487,167 @@ fn raw_end(source: &str, start: usize, syntax: &Syntax<'_>) -> Option<usize> {
     None
 }
 
-/// The template with its tags formatted: all of them, or only the one at `only`.
-fn render(source: &str, segments: &[Segment], options: &Options, only: Option<usize>) -> String {
+/// `source`, already indented, formatted once: its tags laid out, and then, while a line is
+/// longer than the width, the widest tag on it that runs past the width broken over lines,
+/// measured again after each.
+fn format_once(source: &str, syntax: &Syntax<'_>, options: &Options) -> String {
+    let segments = segments(source, syntax);
+    let start_tags = match options.html_indent {
+        Some(_) => html::start_tags(source, &segments),
+        None => Vec::new(),
+    };
+    let mut breaks = Breaks::default();
+    let mut cache = HashMap::new();
+    loop {
+        let rendered = render(
+            source,
+            &segments,
+            &start_tags,
+            options,
+            None,
+            &breaks,
+            &mut cache,
+        );
+        match next_break(&rendered, &segments, options, &breaks) {
+            Some(Construct::Tag(index)) => breaks.tags.insert(index),
+            Some(Construct::Html(index)) => breaks.html.insert(index),
+            None => return rendered.text,
+        };
+    }
+}
+
+/// What a render breaks over lines because its line was too long: askama tags, by segment,
+/// and HTML start tags, by index.
+#[derive(Debug, Default)]
+struct Breaks {
+    tags: HashSet<usize>,
+    html: HashSet<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Construct {
+    Tag(usize),
+    Html(usize),
+}
+
+struct Rendered {
+    text: String,
+    /// Where each tag and HTML start tag ended up in `text`.
+    constructs: Vec<(Construct, std::ops::Range<usize>)>,
+}
+
+/// Laid-out tags by segment, whether broken, and the text before them on their line.
+type Cache = HashMap<(usize, bool, String), Option<String>>;
+
+/// The first line of `rendered` longer than the width that holds a tag starting before the
+/// width and ending after it, and the widest such tag on that line. A tag that starts its line
+/// is not one: it was laid out already.
+fn next_break(
+    rendered: &Rendered,
+    segments: &[Segment],
+    options: &Options,
+    breaks: &Breaks,
+) -> Option<Construct> {
+    let text = &rendered.text;
+    let columns = |text: &str| -> usize {
+        text.chars()
+            .map(|c| if c == '\t' { options.tab_width } else { 1 })
+            .sum()
+    };
+    let mut start = 0;
+    for line in text.split('\n') {
+        let end = start + line.len();
+        if columns(line) > options.max_width {
+            let mut best: Option<(usize, Construct)> = None;
+            for (construct, range) in &rendered.constructs {
+                if range.start < start || range.end > end {
+                    continue;
+                }
+                let before = &text[start..range.start];
+                let from = columns(before);
+                let to = from + columns(&text[range.clone()]);
+                if from >= options.max_width || to <= options.max_width {
+                    continue;
+                }
+                let eligible = match *construct {
+                    Construct::Tag(index) => {
+                        !breaks.tags.contains(&index)
+                            && !before.trim_start_matches([' ', '\t']).is_empty()
+                            && matches!(
+                                segments[index],
+                                Segment::Tag {
+                                    kind: TagKind::Expression | TagKind::Block,
+                                    ..
+                                }
+                            )
+                    }
+                    Construct::Html(index) => !breaks.html.contains(&index),
+                };
+                if eligible && best.is_none_or(|(width, _)| to - from > width) {
+                    best = Some((to - from, *construct));
+                }
+            }
+            if let Some((_, construct)) = best {
+                return Some(construct);
+            }
+        }
+        start = end + 1;
+    }
+    None
+}
+
+/// The template with its tags formatted: all of them, or only the one at `only`; tags and
+/// HTML start tags in `breaks` are broken over lines.
+fn render(
+    source: &str,
+    segments: &[Segment],
+    start_tags: &[html::StartTag],
+    options: &Options,
+    only: Option<usize>,
+    breaks: &Breaks,
+    cache: &mut Cache,
+) -> Rendered {
+    enum Event {
+        Start,
+        End,
+        Gap(std::ops::Range<usize>),
+        Close(Option<std::ops::Range<usize>>),
+    }
+    let mut events: Vec<(usize, usize, Event)> = Vec::new();
+    for (index, tag) in start_tags.iter().enumerate() {
+        events.push((tag.range.start, index, Event::Start));
+        if breaks.html.contains(&index) {
+            for gap in &tag.gaps {
+                events.push((gap.start, index, Event::Gap(gap.clone())));
+            }
+            let at = tag.close_gap.as_ref().map_or(tag.close, |gap| gap.start);
+            events.push((at, index, Event::Close(tag.close_gap.clone())));
+        }
+        events.push((tag.range.end, index, Event::End));
+    }
+    events.sort_by_key(|(at, _, _)| *at);
+    let unit = options.html_indent.as_deref().unwrap_or("  ");
+    let mut html_starts = vec![(0, String::new()); start_tags.len()];
+    let mut next_event = 0;
+
     let mut out = String::with_capacity(source.len());
+    let mut constructs = Vec::new();
     for (index, segment) in segments.iter().enumerate() {
+        let line_start = out.rfind('\n').map_or(0, |at| at + 1);
         match segment {
             Segment::Tag { kind, range, inner } if only.is_none_or(|only| only == index) => {
+                let start = out.len();
                 let open = &source[range.start..inner.start];
                 let close = &source[inner.end..range.end];
                 let body = &source[inner.clone()];
-                let line = &out[out.rfind('\n').map_or(0, |at| at + 1)..];
+                let line = &out[line_start..];
+                let broken = breaks.tags.contains(&index);
                 let laid = match kind {
                     TagKind::Comment => None,
-                    TagKind::Expression | TagKind::Block => {
-                        lay_out(*kind, body, open, close, line, options)
-                    }
+                    TagKind::Expression | TagKind::Block => cache
+                        .entry((index, broken, line.to_owned()))
+                        .or_insert_with(|| lay_out(*kind, body, open, close, line, options, broken))
+                        .clone(),
                 };
                 out.push_str(open);
                 match (kind, laid) {
@@ -436,11 +659,51 @@ fn render(source: &str, segments: &[Segment], options: &Options, only: Option<us
                     },
                 }
                 out.push_str(close);
+                constructs.push((Construct::Tag(index), start..out.len()));
             }
-            other => out.push_str(&source[other.range()]),
+            Segment::Tag { range, .. } => out.push_str(&source[range.clone()]),
+            Segment::Verbatim(range) | Segment::Raw(range) => {
+                let mut at = range.start;
+                while let Some((offset, tag, event)) = events.get(next_event)
+                    && *offset <= range.end
+                {
+                    out.push_str(&source[at..*offset]);
+                    at = *offset;
+                    match event {
+                        Event::Start => {
+                            let line = &out[out.rfind('\n').map_or(0, |at| at + 1)..];
+                            let base =
+                                &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
+                            html_starts[*tag] = (out.len(), base.to_owned());
+                        }
+                        Event::End => {
+                            let (start, _) = html_starts[*tag];
+                            constructs.push((Construct::Html(*tag), start..out.len()));
+                        }
+                        Event::Gap(gap) => {
+                            out.push('\n');
+                            out.push_str(&html_starts[*tag].1);
+                            out.push_str(unit);
+                            at = gap.end;
+                        }
+                        Event::Close(gap) => {
+                            out.push('\n');
+                            out.push_str(&html_starts[*tag].1);
+                            if let Some(gap) = gap {
+                                at = gap.end;
+                            }
+                        }
+                    }
+                    next_event += 1;
+                }
+                out.push_str(&source[at..range.end]);
+            }
         }
     }
-    out
+    Rendered {
+        text: out,
+        constructs,
+    }
 }
 
 /// A part of a tag: its own words, spaced as tokens, or an expression, laid out.
@@ -451,7 +714,9 @@ enum Piece {
 
 /// The inside of a tag that starts after `line` (the text before it on its line), with its
 /// expressions laid out; `None` when the tag holds no expression the printer lays out, or one
-/// it cannot print back to the same tree, so the tag keeps its tokens' layout.
+/// it cannot print back to the same tree, so the tag keeps its tokens' layout. A `broken` tag
+/// has its contents on lines of their own, one level in from the line's indentation, and its
+/// closing delimiter back at that indentation.
 fn lay_out(
     kind: TagKind,
     body: &str,
@@ -459,6 +724,7 @@ fn lay_out(
     close: &str,
     line: &str,
     options: &Options,
+    broken: bool,
 ) -> Option<String> {
     let tokens = tokenize(body)?;
     let pieces = pieces(kind, &tokens)?;
@@ -471,11 +737,12 @@ fn lay_out(
     let base_width = columns(base);
     // A tag after other text on its line stays on one line: breaking it would leave that text
     // as long as it was, and put line breaks in the middle of markup.
-    let max_width = if base.len() == line.len() {
+    let max_width = if broken || base.len() == line.len() {
         options.max_width
     } else {
         usize::MAX
     };
+    let level = usize::from(broken);
 
     let mut parts = Vec::with_capacity(pieces.len());
     for piece in &pieces {
@@ -491,8 +758,15 @@ fn lay_out(
         });
     }
 
-    let mut out = String::from(" ");
-    let mut col = columns(line) + columns(open) + 1;
+    let (mut out, mut col, close_width) = if broken {
+        (format!("\n{base}    "), base_width + 4, 0)
+    } else {
+        (
+            " ".to_owned(),
+            columns(line) + columns(open) + 1,
+            1 + columns(close),
+        )
+    };
     for (index, (parsed, flat)) in parts.iter().enumerate() {
         if index > 0 {
             out.push(' ');
@@ -502,14 +776,13 @@ fn lay_out(
             .iter()
             .map(|(_, flat)| 1 + layout::width(flat))
             .sum::<usize>()
-            + 1
-            + columns(close);
+            + close_width;
         let text = match parsed {
             None => flat.clone(),
             Some(parsed) => {
                 let laid = parsed.with_expr(|expr, source| {
                     layout::Printer::new(base, base_width, max_width, source)
-                        .layout(expr, 0, col, trail)
+                        .layout(expr, level, col, trail)
                 })??;
                 if layout::Parsed::new(&laid).tree()? != parsed.tree()? {
                     return None;
@@ -520,7 +793,12 @@ fn lay_out(
         col = layout::Printer::new(base, base_width, max_width, "").end_column(&text, col);
         out.push_str(&text);
     }
-    out.push(' ');
+    if broken {
+        out.push('\n');
+        out.push_str(base);
+    } else {
+        out.push(' ');
+    }
     Some(out)
 }
 
@@ -1133,6 +1411,61 @@ mod tests {
         );
     }
 
+    /// The tag runs past the width after other markup on its line, so it breaks after its
+    /// opening delimiter and before its closing one, and what touches it stays touching.
+    #[test]
+    fn a_long_line_breaks_inside_the_tag_that_runs_past_the_width() {
+        let line = r#"{{ kit::Input::hidden("shown", f.path) }}<div class="flex min-w-0 items-center gap-2">{{ kit::Check::new("want", f.path).value(f.path).checked(f.state != "skipped").class("min-w-0 flex-[1_1_60%] wrap-anywhere") }}<span class="text-muted">{{ self.size(f.size) }}</span></div>"#;
+        let expected = r#"    {{ kit::Input::hidden("shown", f.path) }}<div class="flex min-w-0 items-center gap-2">{{
+        kit::Check::new("want", f.path)
+            .value(f.path)
+            .checked(f.state != "skipped")
+            .class("min-w-0 flex-[1_1_60%] wrap-anywhere")
+    }}<span class="text-muted">{{ self.size(f.size) }}</span></div>"#;
+        assert_eq!(formatted(&format!("    {line}")), expected);
+        let options = Options {
+            html_indent: Some("    ".to_owned()),
+            ..Options::default()
+        };
+        assert_eq!(
+            formatted_with(
+                &format!("{{% for f in files %}}\n{line}\n{{% endfor %}}"),
+                &options
+            ),
+            format!("{{% for f in files %}}\n{expected}\n{{% endfor %}}")
+        );
+    }
+
+    #[test]
+    fn a_broken_block_tag_keeps_its_markers_on_its_delimiters() {
+        let (a, b) = ("a".repeat(44), "b".repeat(44));
+        let source = format!("<p>{{%- if {a} && {b} -%}}x{{% endif %}}</p>");
+        assert_eq!(
+            formatted(&source),
+            format!("<p>{{%-\n    if {a} && {b}\n-%}}x{{% endif %}}</p>")
+        );
+    }
+
+    #[test]
+    fn a_long_line_breaks_an_html_start_tag_one_attribute_per_line() {
+        let class = "a".repeat(70);
+        let source = format!(
+            "<div>\n<input class=\"{class}\" name=\"b\" value=\"{{{{ x }}}}\" required>\n<img src=\"{class}\" alt=\"a picture\" />\n</div>"
+        );
+        let expected = format!(
+            "<div>\n  <input\n    class=\"{class}\"\n    name=\"b\"\n    value=\"{{{{ x }}}}\"\n    required\n  >\n  <img\n    src=\"{class}\"\n    alt=\"a picture\"\n  />\n</div>"
+        );
+        assert_eq!(html(&source), expected);
+    }
+
+    #[test]
+    fn a_comment_moves_with_its_first_line() {
+        assert_eq!(
+            html("<div>\n{# one\n   two #}\n</div>"),
+            "<div>\n  {# one\n     two #}\n</div>"
+        );
+    }
+
     #[test]
     fn a_lone_call_argument_breaks_in_place() {
         let source = "{{ foo(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, ccccccccccccccccccccccccc, d)) }}";
@@ -1269,7 +1602,7 @@ text
     <img src=\"a\" />
   {% else %}
     {# a
-   comment #}
+       comment #}
   {% endif %}
   {% match v %}
     {% when Some(x) %}
