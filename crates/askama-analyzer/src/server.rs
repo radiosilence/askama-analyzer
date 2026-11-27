@@ -22,7 +22,7 @@ use async_lsp::panic::CatchUnwindLayer;
 use async_lsp::router::Router;
 use async_lsp::server::LifecycleLayer;
 use async_lsp::tracing::TracingLayer;
-use async_lsp::{ClientSocket, LanguageClient, ResponseError};
+use async_lsp::{ClientSocket, ErrorCode, LanguageClient, ResponseError};
 use lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
     Initialized, Progress, PublishDiagnostics, ShowMessage,
@@ -267,7 +267,7 @@ fn router(state: State) -> Router<State> {
 
 /// Sends a request down the lane and waits for its answer. A Rust file is answered at once
 /// with nothing: rust-analyzer answers there, and Zed asks every server attached to a buffer.
-fn ask<T: Send + 'static, Q: FnOnce(oneshot::Sender<Option<T>>) -> Query>(
+fn ask<T: Send + 'static, Q: FnOnce(oneshot::Sender<features::Answer<T>>) -> Query>(
     state: &State,
     uri: &Url,
     query: Q,
@@ -280,7 +280,10 @@ fn ask<T: Send + 'static, Q: FnOnce(oneshot::Sender<Option<T>>) -> Query>(
         if skip || queries.send(query).await.is_err() {
             return Ok(None);
         }
-        Ok(answer.await.unwrap_or(None))
+        answer
+            .await
+            .unwrap_or(Ok(None))
+            .map_err(|message| ResponseError::new(ErrorCode::REQUEST_FAILED, message))
     }
 }
 

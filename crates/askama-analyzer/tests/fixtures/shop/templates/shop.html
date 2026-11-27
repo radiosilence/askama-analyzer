@@ -1,3 +1,3 @@
-<h1>{{ title }}</h1>
+<h1>{{ title }} ({{ title.len() }})</h1>
 <ul>{% for product in products %}<li>{{ product.name }}: {{ product.price() }}</li>{% endfor %}</ul>
 <footer>{{ kit::Button::primary("Checkout") }}</footer>

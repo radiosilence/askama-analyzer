@@ -92,6 +92,7 @@ async fn hover_on_a_field_shows_its_documentation() {
     let hover = answer
         .await
         .expect("the lane answers")
+        .expect("the lane does not refuse")
         .expect("hover has an answer");
     let shown = match hover.contents {
         HoverContents::Markup(markup) => markup.value,
@@ -124,6 +125,7 @@ async fn hover_at(workspaces: &mut [Workspace], needle: &str, into: usize) -> Op
     answer
         .await
         .expect("the lane answers")
+        .expect("the lane does not refuse")
         .map(|hover| match hover.contents {
             HoverContents::Markup(markup) => markup.value,
             other => format!("{other:?}"),
@@ -175,7 +177,10 @@ async fn going_to_a_fields_definition_lands_on_the_field_in_rust() {
         ),
     )
     .await;
-    let Some(GotoDefinitionResponse::Array(locations)) = answer.await.expect("the lane answers")
+    let Some(GotoDefinitionResponse::Array(locations)) = answer
+        .await
+        .expect("the lane answers")
+        .expect("the lane does not refuse")
     else {
         panic!("no definition");
     };
@@ -217,7 +222,11 @@ async fn completing_after_a_dot_offers_the_fields_and_methods_of_the_loop_variab
         ),
     )
     .await;
-    let labels: Vec<String> = match answer.await.expect("the lane answers") {
+    let labels: Vec<String> = match answer
+        .await
+        .expect("the lane answers")
+        .expect("the lane does not refuse")
+    {
         Some(CompletionResponse::List(list)) => {
             list.items.into_iter().map(|item| item.label).collect()
         }
@@ -263,7 +272,11 @@ async fn completing_a_bare_name_offers_the_loop_variable_in_scope() {
         ),
     )
     .await;
-    let labels: Vec<String> = match answer.await.expect("the lane answers") {
+    let labels: Vec<String> = match answer
+        .await
+        .expect("the lane answers")
+        .expect("the lane does not refuse")
+    {
         Some(CompletionResponse::List(list)) => {
             list.items.into_iter().map(|item| item.label).collect()
         }
@@ -302,7 +315,36 @@ async fn rename_at(
         ),
     )
     .await;
-    answer.await.expect("the lane answers")
+    answer
+        .await
+        .expect("the lane answers")
+        .expect("the lane does not refuse")
+}
+
+#[tokio::test]
+async fn renaming_a_method_from_a_dependency_is_refused_with_a_reason() {
+    let Some(rust_analyzer) = rust_analyzer() else {
+        return;
+    };
+    let mut workspaces = vec![shop(rust_analyzer).await];
+    let (uri, position) = after(&fixture().join("templates/shop.html"), "title.", 1);
+    let (reply, answer) = oneshot::channel();
+    features::answer(
+        &mut workspaces,
+        Query::PrepareRename(
+            TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position,
+            },
+            reply,
+        ),
+    )
+    .await;
+    let refusal = answer
+        .await
+        .expect("the lane answers")
+        .expect_err("`String::len` is std's and cannot be renamed");
+    assert!(!refusal.is_empty(), "the refusal says why: {refusal:?}");
 }
 
 /// The files an edit changes, and the text each of its edits replaces.

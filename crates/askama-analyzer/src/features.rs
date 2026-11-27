@@ -27,22 +27,26 @@ use crate::workspace::{Asked, Workspace};
 /// asked. An identifier no template would use.
 const MARKER: &str = "__askama_analyzer_cursor";
 
+/// What the lane answers a request with: nothing to say, an answer, or a refusal the editor
+/// shows the user.
+pub type Answer<T> = Result<Option<T>, String>;
+
 /// A request the lane answers, with where the answer goes.
 pub enum Query {
-    Hover(HoverParams, oneshot::Sender<Option<Hover>>),
+    Hover(HoverParams, oneshot::Sender<Answer<Hover>>),
     Definition(
         GotoDefinitionParams,
-        oneshot::Sender<Option<GotoDefinitionResponse>>,
+        oneshot::Sender<Answer<GotoDefinitionResponse>>,
     ),
-    References(ReferenceParams, oneshot::Sender<Option<Vec<Location>>>),
+    References(ReferenceParams, oneshot::Sender<Answer<Vec<Location>>>),
     PrepareRename(
         TextDocumentPositionParams,
-        oneshot::Sender<Option<PrepareRenameResponse>>,
+        oneshot::Sender<Answer<PrepareRenameResponse>>,
     ),
-    Rename(RenameParams, oneshot::Sender<Option<WorkspaceEdit>>),
+    Rename(RenameParams, oneshot::Sender<Answer<WorkspaceEdit>>),
     Completion(
         CompletionParams,
-        oneshot::Sender<Option<CompletionResponse>>,
+        oneshot::Sender<Answer<CompletionResponse>>,
     ),
 }
 
@@ -64,13 +68,13 @@ impl Query {
 pub async fn answer(workspaces: &mut [Workspace], query: Query) {
     match query {
         Query::Hover(params, reply) => {
-            let _ = reply.send(hover(workspaces, params).await);
+            let _ = reply.send(Ok(hover(workspaces, params).await));
         }
         Query::Definition(params, reply) => {
-            let _ = reply.send(definition(workspaces, params).await);
+            let _ = reply.send(Ok(definition(workspaces, params).await));
         }
         Query::References(params, reply) => {
-            let _ = reply.send(references(workspaces, params).await);
+            let _ = reply.send(Ok(references(workspaces, params).await));
         }
         Query::PrepareRename(params, reply) => {
             let _ = reply.send(prepare_rename(workspaces, params).await);
@@ -79,7 +83,7 @@ pub async fn answer(workspaces: &mut [Workspace], query: Query) {
             let _ = reply.send(rename(workspaces, params).await);
         }
         Query::Completion(params, reply) => {
-            let _ = reply.send(completion(workspaces, params).await);
+            let _ = reply.send(Ok(completion(workspaces, params).await));
         }
     }
 }
@@ -236,46 +240,87 @@ async fn references(
     Some(mapped)
 }
 
+/// Whether the name at a position can be renamed, and its range. rust-analyzer's own prepare
+/// step only checks that there is a name, so a name it will refuse to rename (one defined in a
+/// dependency) would open the editor's rename box and then do nothing. The rename is tried once
+/// with a throwaway name instead, and a refusal, or edits that all fall in code askama
+/// generates, is passed on so the editor says why.
 async fn prepare_rename(
     workspaces: &mut [Workspace],
     params: TextDocumentPositionParams,
-) -> Option<PrepareRenameResponse> {
-    let (workspace, path, _, offset) =
-        locate(workspaces, &params.text_document.uri, params.position)?;
-    let asked = workspace.ask(&path, offset)?;
-    let response = server(workspace)
-        .await?
-        .prepare_rename(position_params(&asked))
-        .await
-        .ok()??;
-    let range = match response {
-        PrepareRenameResponse::Range(range) => range,
-        PrepareRenameResponse::RangeWithPlaceholder { range, .. } => range,
-        PrepareRenameResponse::DefaultBehavior { .. } => return None,
+) -> Answer<PrepareRenameResponse> {
+    let Some((workspace, path, text, offset)) =
+        locate(workspaces, &params.text_document.uri, params.position)
+    else {
+        return Ok(None);
     };
-    let location = workspace.user_location(&Location {
-        uri: asked.uri.clone(),
-        range,
-    })?;
-    (location.uri == params.text_document.uri)
-        .then_some(PrepareRenameResponse::Range(location.range))
+    let Some(name) = word_range(&text, offset) else {
+        return Err("There is no name here to rename".to_owned());
+    };
+    let old_name = text[name.clone()].to_owned();
+    rename_in(
+        workspace,
+        &path,
+        offset,
+        &old_name,
+        format!("{old_name}_renamed"),
+    )
+    .await?;
+    let lines = Lines::new(&text, workspace.encoding());
+    Ok(Some(PrepareRenameResponse::Range(lines.range(&name))))
 }
 
-async fn rename(workspaces: &mut [Workspace], params: RenameParams) -> Option<WorkspaceEdit> {
+async fn rename(workspaces: &mut [Workspace], params: RenameParams) -> Answer<WorkspaceEdit> {
     let at = params.text_document_position;
-    let (workspace, path, text, offset) = locate(workspaces, &at.text_document.uri, at.position)?;
-    let old_name = word_at(&text, offset)?.to_owned();
-    let asked = workspace.ask(&path, offset)?;
-    let edit = server(workspace)
-        .await?
+    let Some((workspace, path, text, offset)) =
+        locate(workspaces, &at.text_document.uri, at.position)
+    else {
+        return Ok(None);
+    };
+    let Some(name) = word_range(&text, offset) else {
+        return Err("There is no name here to rename".to_owned());
+    };
+    let old_name = text[name].to_owned();
+    rename_in(workspace, &path, offset, &old_name, params.new_name)
+        .await
+        .map(Some)
+}
+
+/// rust-analyzer's rename of the name at `offset`, as edits in the user's files, or why there
+/// is none.
+async fn rename_in(
+    workspace: &mut Workspace,
+    path: &Path,
+    offset: usize,
+    old_name: &str,
+    new_name: String,
+) -> Result<WorkspaceEdit, String> {
+    let Some(asked) = workspace.ask(path, offset) else {
+        return Err("Only names that askama turns into Rust can be renamed".to_owned());
+    };
+    let Some(mut server) = server(workspace).await else {
+        return Err("rust-analyzer is not ready to rename yet".to_owned());
+    };
+    let Some(edit) = server
         .rename(RenameParams {
             text_document_position: position_params(&asked),
-            new_name: params.new_name,
+            new_name,
             work_done_progress_params: Default::default(),
         })
         .await
-        .ok()??;
-    Some(user_edit(workspace, edit, &old_name))
+        .map_err(|err| err.to_string())?
+    else {
+        return Err(format!(
+            "rust-analyzer found nothing to rename for `{old_name}`"
+        ));
+    };
+    let edit = user_edit(workspace, edit, old_name);
+    if edit.changes.as_ref().is_none_or(HashMap::is_empty) {
+        return Err(format!(
+            "rust-analyzer's edits for `{old_name}` are all in code askama generates"
+        ));
+    }
+    Ok(edit)
 }
 
 /// A rename's edits in the user's files. An edit is kept only where the text it replaces is
@@ -361,8 +406,8 @@ fn replaces(workspace: &Workspace, location: &Location, name: &str) -> bool {
     text.get(start..end) == Some(name)
 }
 
-/// The identifier around an offset.
-fn word_at(text: &str, offset: usize) -> Option<&str> {
+/// The range of the identifier around an offset.
+fn word_range(text: &str, offset: usize) -> Option<Range<usize>> {
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     let start = text[..offset]
         .char_indices()
@@ -375,7 +420,7 @@ fn word_at(text: &str, offset: usize) -> Option<&str> {
             .char_indices()
             .find(|&(_, c)| !is_word(c))
             .map_or(text.len() - offset, |(at, _)| at);
-    (start < end).then(|| &text[start..end])
+    (start < end).then_some(start..end)
 }
 
 /// Completion: tag keywords, template paths and askama's filters from the text alone, and
@@ -628,14 +673,15 @@ pub fn is_template(workspaces: &[Workspace], path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{without, word_at};
+    use super::{without, word_range};
 
     #[test]
     fn the_word_around_an_offset_is_the_identifier_there() {
-        assert_eq!(word_at("{{ user.name }}", 9), Some("name"), "inside a word");
-        assert_eq!(word_at("{{ user.name }}", 12), Some("name"), "at its end");
-        assert_eq!(word_at("{{ user.name }}", 3), Some("user"), "at its start");
-        assert_eq!(word_at("{{  }}", 3), None, "no word in whitespace");
+        let word = |text: &'static str, offset| word_range(text, offset).map(|range| &text[range]);
+        assert_eq!(word("{{ user.name }}", 9), Some("name"), "inside a word");
+        assert_eq!(word("{{ user.name }}", 12), Some("name"), "at its end");
+        assert_eq!(word("{{ user.name }}", 3), Some("user"), "at its start");
+        assert_eq!(word("{{  }}", 3), None, "no word in whitespace");
     }
 
     #[test]
