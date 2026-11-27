@@ -109,7 +109,7 @@ dependencies = [
 [[package]]
 name = "askama_derive"
 version = "0.16.1"
-source = "git+https://github.com/radiosilence/askama?rev=ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed#ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed"
+source = "git+https://github.com/radiosilence/askama?rev=1c05ac005827fee5bdeb673e07861c781933a7fe#1c05ac005827fee5bdeb673e07861c781933a7fe"
 dependencies = [
  "askama_parser",
  "basic-toml",
@@ -127,7 +127,7 @@ dependencies = [
 [[package]]
 name = "askama_parser"
 version = "0.16.1"
-source = "git+https://github.com/radiosilence/askama?rev=ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed#ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed"
+source = "git+https://github.com/radiosilence/askama?rev=1c05ac005827fee5bdeb673e07861c781933a7fe#1c05ac005827fee5bdeb673e07861c781933a7fe"
 dependencies = [
  "rustc-hash",
  "serde",

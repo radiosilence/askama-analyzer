@@ -16,8 +16,8 @@ askama-analyzer-codegen = { path = "crates/askama-analyzer-codegen" }
 # askama's generator with the `tooling` feature, from the `tooling` branch of
 # radiosilence/askama: askama's release (0.16.1) plus that one change. The
 # parser comes from the same commit, since askama_derive requires its own.
-askama_parser = { git = "https://github.com/radiosilence/askama", rev = "ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed", default-features = false, features = ["config"] }
-askama_derive = { git = "https://github.com/radiosilence/askama", rev = "ee3b7effc0eebf3ab3f78f2dad7d0d5b00d482ed", default-features = false, features = [
+askama_parser = { git = "https://github.com/radiosilence/askama", rev = "1c05ac005827fee5bdeb673e07861c781933a7fe", default-features = false, features = ["config"] }
+askama_derive = { git = "https://github.com/radiosilence/askama", rev = "1c05ac005827fee5bdeb673e07861c781933a7fe", default-features = false, features = [
     "alloc",
     "code-in-doc",
     "config",

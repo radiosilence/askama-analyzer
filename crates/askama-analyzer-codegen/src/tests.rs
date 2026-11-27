@@ -442,3 +442,21 @@ fn each_segment_of_a_called_path_maps_to_its_own_name() {
         );
     }
 }
+
+#[test]
+fn offsets_after_non_ascii_text_count_bytes() {
+    let template = "<p>asked for “{{ q }}” · {{ user.name.is_empty() }}</p>";
+    let files = Memory::with(&[("templates/page.html", template)]);
+    let generated = run(
+        r#"#[derive(Template)] #[template(path = "page.html")] struct Page { q: String, user: User }"#,
+        files,
+    );
+    let field = template.find("name").expect("fixture holds `name`");
+    let mapped: Vec<_> = generated
+        .map
+        .iter()
+        .filter(|mapping| &generated.code[mapping.generated.clone()] == "name")
+        .filter_map(|mapping| template_range(&mapping.origin, "page.html"))
+        .collect();
+    assert_eq!(mapped, vec![field..field + 4]);
+}
