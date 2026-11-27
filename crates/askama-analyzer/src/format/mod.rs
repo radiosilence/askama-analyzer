@@ -257,7 +257,7 @@ fn format_with(
         }
         base
     };
-    let mut formatted = format_once(&indented, syntax, options);
+    let mut formatted = format_once(&indented, syntax, options, blocks);
     // A line broken in one pass is measured as broken in the next, so a pass may break what
     // the one before did not; a few passes settle it.
     let mut second = String::new();
@@ -266,6 +266,7 @@ fn format_with(
             &indent(&formatted, syntax, options, blocks),
             syntax,
             options,
+            blocks,
         );
         if second == formatted {
             break;
@@ -661,10 +662,22 @@ fn raw_end(source: &str, start: usize, syntax: &Syntax<'_>) -> Option<usize> {
 /// `source`, already indented, formatted once: its tags laid out, and then, while a line is
 /// longer than the width, the widest tag on it that runs past the width broken over lines,
 /// measured again after each.
-fn format_once(source: &str, syntax: &Syntax<'_>, options: &Options) -> String {
+fn format_once(
+    source: &str,
+    syntax: &Syntax<'_>,
+    options: &Options,
+    blocks: &html::Blocks,
+) -> String {
     let segments = segments(source, syntax);
+    // Start tags in a body that is captured, or rendered where whitespace is kept, stay whole.
     let start_tags = match options.html_indent {
-        Some(_) => html::start_tags(source, &segments),
+        Some(_) => {
+            let kept = html::kept_bodies(source, &segments, blocks);
+            html::start_tags(source, &segments)
+                .into_iter()
+                .filter(|tag| !kept.iter().any(|body| body.contains(&tag.range.start)))
+                .collect()
+        }
         None => Vec::new(),
     };
     let mut breaks = Breaks::default();
@@ -1869,6 +1882,12 @@ text
             html(source),
             "<div>\n  {% filter upper %}\n  a\n    b\n{% endfilter %}\n  {% let x %}\n  c\n{% endlet %}\n  {% let y: Vec<u8> = v %}\n  <p>\n</div>"
         );
+        // Nor are their start tags broken, since the filter receives the text as written.
+        let long = format!(
+            "{{% filter upper %}}\n<p class=\"{}\" id=\"b\">x</p>\n{{% endfilter %}}",
+            "a".repeat(100)
+        );
+        assert_eq!(html(&long), long);
         // `>=` is the only way to read an `=` straight after a type's `>`.
         assert!(assigns("let y: Vec<u8>= v"));
         assert!(assigns("let y = a >= b"));

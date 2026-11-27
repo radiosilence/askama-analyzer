@@ -112,6 +112,8 @@ struct Indenter<'b> {
     kept_from: Option<usize>,
     /// The blocks opened where their bodies are kept, for templates that extend this one.
     kept_names: HashSet<String>,
+    /// Where the kept bodies are in the template.
+    kept_bodies: Vec<Range<usize>>,
 }
 
 impl Indenter<'_> {
@@ -570,6 +572,16 @@ pub(super) fn kept_blocks(source: &str, segments: &[Segment], inherited: &Blocks
     }
 }
 
+/// Where in `source` the bodies of `filter` and block `let` tags, and of `kept_blocks`, are:
+/// text that is captured, or rendered where its whitespace is kept.
+pub(super) fn kept_bodies(
+    source: &str,
+    segments: &[Segment],
+    kept_blocks: &Blocks,
+) -> Vec<Range<usize>> {
+    scan(source, segments, kept_blocks).kept_bodies
+}
+
 fn scan<'b>(source: &str, segments: &[Segment], kept_blocks: &'b Blocks) -> Indenter<'b> {
     let mut indenter = Indenter {
         stack: Vec::new(),
@@ -579,6 +591,7 @@ fn scan<'b>(source: &str, segments: &[Segment], kept_blocks: &'b Blocks) -> Inde
         kept_blocks,
         kept_from: None,
         kept_names: HashSet::new(),
+        kept_bodies: Vec::new(),
     };
     // No line break precedes the first line's whitespace, so it would render.
     indenter.new_line(true);
@@ -594,7 +607,17 @@ fn scan<'b>(source: &str, segments: &[Segment], kept_blocks: &'b Blocks) -> Inde
             Segment::Tag { kind, range, inner } => {
                 let start = indenter.lines.len() - 1;
                 if *kind == TagKind::Block {
+                    let was = indenter.keeping();
                     indenter.askama_block(&source[inner.clone()]);
+                    match (was, indenter.keeping()) {
+                        (false, true) => indenter.kept_bodies.push(range.end..source.len()),
+                        (true, false) => {
+                            if let Some(body) = indenter.kept_bodies.last_mut() {
+                                body.end = range.start;
+                            }
+                        }
+                        _ => {}
+                    }
                 } else {
                     indenter.content();
                 }
