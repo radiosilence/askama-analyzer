@@ -21,7 +21,7 @@ Every change is a squash-merged pull request with signed commits. `main` is merg
 
 ## CI/CD
 
-One workflow, `.github/workflows/ci-cd.yml`, ending in `Checks`, the only required status. `changes` decides which domains a diff touches (`rust`, `vendor`, `changelog`, `workflows`, `deps`), each an allowlist of paths; a new top-level source directory must be added there. It also decides whether the run releases: a release pull request (branch `release-v*`) builds every platform without publishing, and a push to `main` that changes the workspace version publishes it once `Checks` has passed. `versions` runs on every run. `release.yml` only opens the release pull request.
+One workflow, `.github/workflows/ci-cd.yml`, ending in `Checks`, the only required status. `changes` decides which domains a diff touches (`rust`, `vendor`, `changelog`, `workflows`, `action`, `deps`), each an allowlist of paths; a new top-level source directory must be added there. It also decides whether the run releases: a release pull request (branch `release-v*`) builds every platform without publishing, and a push to `main` that changes the workspace version publishes it once `Checks` has passed. `versions` runs on every run. `release.yml` only opens the release pull request.
 
 ## Check
 

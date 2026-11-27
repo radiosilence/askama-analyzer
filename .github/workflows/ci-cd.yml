@@ -58,6 +58,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       changelog: ${{ steps.filter.outputs.changelog }}
       workflows: ${{ steps.filter.outputs.workflows }}
+      action: ${{ steps.filter.outputs.action }}
       deps: ${{ steps.filter.outputs.deps }}
       release: ${{ steps.filter.outputs.release }}
       version: ${{ steps.filter.outputs.version }}
@@ -87,7 +88,7 @@ jobs:
         # command rather than an answer, so every question is asked in a
         # condition.
         run: |
-          rust=true changelog=true workflows=true deps=true release=false
+          rust=true changelog=true workflows=true action=true deps=true release=false
           # The workspace version, which every other version file follows
           # (scripts/versions.py).
           version_of() { sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' | head -1; }
@@ -149,6 +150,7 @@ jobs:
             # generator's tests read.
             touches '^crates/|^vendor/|^Cargo\.(toml|lock)$|^\.cargo/|^mise\.toml$|^\.github/' || rust=false
             touches '^\.github/(workflows|actions)/' || workflows=false
+            touches '^action\.yml$|^\.github/workflows/' || action=false
             # editors/claude-code and .claude-plugin are manifests with no
             # build; `versions`, which runs on every change, holds the plugin's
             # version to the others.
@@ -164,6 +166,7 @@ jobs:
             echo "rust=$rust"
             echo "changelog=$changelog"
             echo "workflows=$workflows"
+            echo "action=$action"
             echo "deps=$deps"
             echo "release=$release"
             echo "version=$version"
@@ -391,11 +394,45 @@ jobs:
 
   # The one status the ruleset requires. Skipped jobs are domains the change
   # does not touch and pass; anything failed or cancelled fails it.
+  # The GitHub Action at the root, run as a workflow uses it, against the
+  # latest release on each runner it supports: it passes a formatted template
+  # and fails an unformatted one.
+  action:
+    name: Action (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.action == 'true'
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - shell: bash
+        run: |
+          mkdir -p action-test/formatted/templates action-test/unformatted/templates
+          printf '{{ x }}\n' > action-test/formatted/templates/page.html
+          printf '{{x}}\n' > action-test/unformatted/templates/page.html
+      - uses: ./
+        with:
+          paths: action-test/formatted
+      - id: unformatted
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: action-test/unformatted
+      - if: steps.unformatted.outcome != 'failure'
+        shell: bash
+        run: |
+          echo "::error::the action passed an unformatted template"
+          exit 1
+
   checks:
     name: Checks
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [changes, check, versions, changelog, actionlint, audit, make-room, build]
+    needs: [changes, check, versions, changelog, actionlint, audit, make-room, build, action]
     if: always()
     steps:
       - env:
