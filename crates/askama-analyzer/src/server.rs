@@ -78,6 +78,7 @@ pub async fn run() -> anyhow::Result<ExitCode> {
             encoding: Encoding::Utf16,
             roots: Vec::new(),
             config: Config::default(),
+            max_width: crate::format::Options::default().max_width,
             queries,
             inbox: Some(inbox),
         };
@@ -101,6 +102,8 @@ struct State {
     encoding: Encoding,
     roots: Vec<PathBuf>,
     config: Config,
+    /// The formatter's line width: the initialization option `format.maxWidth`.
+    max_width: usize,
     queries: mpsc::Sender<Query>,
     /// Handed to the lane when it starts.
     inbox: Option<mpsc::Receiver<Query>>,
@@ -193,7 +196,7 @@ fn router(state: State) -> Router<State> {
             ask(state, &uri, |reply| Query::Rename(params, reply))
         })
         .request::<Formatting, _>(|state, params| {
-            let edits = format_document(state, &params.text_document.uri);
+            let edits = format_document(state, &params.text_document.uri, &params.options);
             async move { Ok(edits) }
         })
         .request::<Completion, _>(|state, params| {
@@ -287,14 +290,30 @@ fn ask<T: Send + 'static, Q: FnOnce(oneshot::Sender<Option<T>>) -> Query>(
 /// The whole document's formatting as one edit, or none when it is formatted already. Only
 /// Askama documents are formatted: HTML and Rust have formatters of their own. A template the
 /// formatter refuses (it does not parse, or formatting would change what it means) is left as
-/// it is.
-fn format_document(state: &State, uri: &Url) -> Option<Vec<lsp_types::TextEdit>> {
+/// it is. HTML templates are indented by the editor's indentation settings.
+fn format_document(
+    state: &State,
+    uri: &Url,
+    editor: &lsp_types::FormattingOptions,
+) -> Option<Vec<lsp_types::TextEdit>> {
     let path = file_path(uri)?;
     let doc = state.shared.inner.lock().docs.get(&path).cloned()?;
     if doc.language != ASKAMA_LANGUAGE {
         return None;
     }
-    let formatted = match crate::format::format(&doc.text, &askama_parser::Syntax::default()) {
+    let tab_size = usize::try_from(editor.tab_size).unwrap_or(4);
+    let unit = if editor.insert_spaces {
+        " ".repeat(tab_size)
+    } else {
+        "\t".to_owned()
+    };
+    let options = crate::format::Options {
+        max_width: state.max_width,
+        html_indent: crate::format::is_html(&path).then_some(unit),
+        tab_width: tab_size,
+    };
+    let syntax = askama_parser::Syntax::default();
+    let formatted = match crate::format::format(&doc.text, &syntax, &options) {
         Ok(formatted) => formatted,
         Err(err) => {
             tracing::debug!(path = %path.display(), %err, "not formatting");
@@ -320,6 +339,15 @@ fn initialize(state: &mut State, params: &InitializeParams) -> InitializeResult 
             .and_then(|general| general.position_encodings.as_deref()),
     );
     state.config = Config::from_initialization_options(params.initialization_options.as_ref());
+    if let Some(max_width) = params
+        .initialization_options
+        .as_ref()
+        .and_then(|options| options.pointer("/format/maxWidth"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|width| usize::try_from(width).ok())
+    {
+        state.max_width = max_width;
+    }
     let progress = params
         .capabilities
         .window

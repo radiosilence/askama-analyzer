@@ -1,8 +1,10 @@
 //! The formatter over real templates: askama's test suite and, when given, real projects.
 //!
-//! `format` checks its own result (the same tree as the original, and nothing left to change on
-//! a second pass) and refuses otherwise, so every template askama parses must format without
-//! an error. Templates askama rejects are skipped: there is nothing to keep.
+//! `format` checks its own result (the same tree as the original, indentation that changes only
+//! leading whitespace, and nothing left to change on a second pass) and refuses otherwise, so
+//! every template askama parses must format without an error. HTML templates are formatted with
+//! HTML indentation, the others without. Templates askama rejects are skipped: there is nothing
+//! to keep.
 //!
 //! Real projects are read when `ASKAMA_TEMPLATE_DIRS` names them:
 //!
@@ -13,7 +15,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use askama_analyzer::format::{FormatError, format};
+use askama_analyzer::format::{FormatError, Options, format, is_html};
 use askama_parser::Syntax;
 
 fn suite() -> PathBuf {
@@ -109,7 +111,21 @@ fn check_on_this_thread(sources: Vec<(String, String)>) -> (usize, usize, usize)
     let (mut formatted, mut changed, mut rejected) = (0, 0, 0);
     let mut failures = Vec::new();
     for (name, source) in sources {
-        match format(&source, &syntax) {
+        let html = Options {
+            html_indent: Some("  ".to_owned()),
+            ..Options::default()
+        };
+        // Inline sources have no extension, so they are formatted both as HTML and not.
+        let inline = name.contains(" #");
+        let result = if is_html(Path::new(&name)) {
+            format(&source, &syntax, &html)
+        } else if inline {
+            format(&source, &syntax, &html)
+                .and_then(|_| format(&source, &syntax, &Options::default()))
+        } else {
+            format(&source, &syntax, &Options::default())
+        };
+        match result {
             Ok(output) => {
                 formatted += 1;
                 if output != source {

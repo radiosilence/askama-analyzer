@@ -28,12 +28,12 @@ It needs `rust-analyzer`, from the client's initialization options or the `PATH`
   ```
 
   The plugin attaches to `.html`, `.htm`, `.txt` and `.md` files as well as `.askama`, since that is how templates are named; in a file no template struct reads, the server does nothing. It leaves `.rs` files to rust-analyzer.
-- **Anything else** that speaks LSP: run `askama-analyzer` on stdio for template files. rust-analyzer's path, arguments, environment and settings can be passed as `initializationOptions.rustAnalyzer` (`path`, `args`, `env`, `initializationOptions`, `settings`).
+- **Anything else** that speaks LSP: run `askama-analyzer` on stdio for template files. rust-analyzer's path, arguments, environment and settings can be passed as `initializationOptions.rustAnalyzer` (`path`, `args`, `env`, `initializationOptions`, `settings`), and the formatter's line width as `initializationOptions.format.maxWidth` (100 by default). Formatting indents HTML templates by the editor's tab size and spaces-or-tabs setting.
 
 ## On the command line
 
 - `askama-analyzer check [--rust-analyzer PATH] [PATH]` prints every template error in a Cargo workspace and exits 1 if there are any. askama's own errors need nothing else; given a rust-analyzer, it also reports the type errors rust-analyzer finds in the generated code, as an editor shows them.
-- `askama-analyzer fmt [--check] [PATH...]` formats templates, the files given or every file under a `templates` directory, changing only the spacing inside tags: text outside them is what askama renders, so it is never touched.
+- `askama-analyzer fmt [--check] [--max-width N] [--indent N|tab] [PATH...]` formats templates, the files given or every file under a `templates` directory. Expressions inside tags are laid out as rustfmt lays out Rust, broken over lines when they pass `--max-width` (100); whitespace inside a tag is never rendered. HTML templates (`.html`, `.htm`) are also re-indented by the nesting of elements and block tags, `--indent` (2 spaces) per level. That changes only how much whitespace starts each line, which HTML renders the same whatever its amount, and leaves `<pre>`, `<textarea>`, `<script>`, `<style>`, `raw` blocks and comments as written. Other templates' text is never touched, since askama renders it byte for byte.
 
 ## How it is put together
 
