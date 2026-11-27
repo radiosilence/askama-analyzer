@@ -778,7 +778,14 @@ fn next_break(
                         }
                         _ => false,
                     },
-                    Construct::Html(index) => !breaks.html.contains(&index) && starts_line,
+                    // Split, the tag leaves its `>` and what follows on a line back at the
+                    // indentation; when that would still be too long, the split buys nothing
+                    // and leaves a bare `>` before dense content, so the tag stays whole.
+                    Construct::Html(index) => {
+                        !breaks.html.contains(&index)
+                            && starts_line
+                            && indent + 1 + columns(&text[range.end..end]) <= options.max_width
+                    }
                 };
                 if eligible && best.is_none_or(|(width, _)| to - from > width) {
                     best = Some((to - from, *construct));
@@ -1277,7 +1284,12 @@ fn format_tokens(body: &str, keep_breaks: bool) -> Option<String> {
 
     for (index, token) in tokens.iter().enumerate() {
         let previous = index.checked_sub(1).map(|i| tokens[i]);
-        let text = token.text;
+        // `Vec<u8>= v` reads as `>=`: in a type it closes the generics and then assigns.
+        let (text, assigns) = match token.text {
+            ">=" if generics > 0 => (">", true),
+            ">>=" if generics > 1 => (">>", true),
+            text => (text, false),
+        };
 
         let opens_generics = text == "<"
             && (previous.is_some_and(|p| p.text == "::")
@@ -1338,6 +1350,9 @@ fn format_tokens(body: &str, keep_breaks: bool) -> Option<String> {
             out.push(' ');
         }
         out.push_str(text);
+        if assigns {
+            out.push_str(" =");
+        }
 
         match text {
             "(" | "[" | "{" => depth += 1,
@@ -1354,9 +1369,12 @@ fn format_tokens(body: &str, keep_breaks: bool) -> Option<String> {
         if opens_generics {
             generics += 1;
         }
-        generic_close = closes_generics;
+        generic_close = closes_generics && !assigns;
         if closes_generics {
             generics = generics.saturating_sub(if text == ">>" { 2 } else { 1 });
+        }
+        if assigns {
+            in_type = false;
         }
         prefix = is_prefix;
     }
@@ -1545,6 +1563,11 @@ mod tests {
     #[test]
     fn types_in_let_and_macro_tags_keep_generics_tight() {
         assert_eq!(
+            formatted("{% let x: Vec<u8>= v %}{% let y: Vec<Vec<u8>>= w %}"),
+            "{% let x: Vec<u8> = v %}{% let y: Vec<Vec<u8>> = w %}"
+        );
+        assert_eq!(formatted("{% let x = a >= b %}"), "{% let x = a >= b %}");
+        assert_eq!(
             formatted("{% let x : Vec < u8 > = v %}"),
             "{% let x: Vec<u8> = v %}"
         );
@@ -1672,6 +1695,22 @@ mod tests {
             "<div>\n  <input\n    class=\"{class}\"\n    name=\"b\"\n    value=\"{{{{ x }}}}\"\n    required\n  >\n  <img\n    src=\"{class}\"\n    alt=\"a picture\"\n  />\n</div>"
         );
         assert_eq!(html(&source), expected);
+    }
+
+    #[test]
+    fn a_start_tag_followed_by_long_content_stays_whole() {
+        let class = "a".repeat(80);
+        let short = format!("<div>\n<strong class=\"{class}\" title=\"t\">x</strong>\n</div>");
+        assert_eq!(
+            html(&short),
+            format!(
+                "<div>\n  <strong\n    class=\"{class}\"\n    title=\"t\"\n  >x</strong>\n</div>"
+            )
+        );
+        let words = "word ".repeat(20);
+        let long =
+            format!("<div>\n  <strong class=\"{class}\" title=\"t\">{words}</strong>\n</div>");
+        assert_eq!(html(&long), long);
     }
 
     #[test]

@@ -1,0 +1,1 @@
+- **The formatter writes `Vec<u8> = v` and keeps a start tag whole before dense content.** A typed `let` written `Vec<u8>= v` came out as `Vec<u8 >= v`, which reads as a comparison, and a start tag that begins a long line was split onto attribute lines even when the content after its `>` stayed as long as before.
